@@ -1,0 +1,22 @@
+{
+  "schema": "newengine.profiler.service.v1",
+  "service_id": "profiler.api",
+  "engine_gateway": "engine.profiler",
+  "capability": "profiler.backend",
+  "methods": [
+    "info_json",
+    "profiler.job_begin_json_v1",
+    "profiler.job_end_json_v1",
+    "profiler.job_status_json_v1",
+    "profiler.snapshot_json_v1",
+    "profiler.diagnostics_json_v1",
+    "profiler.flush_report_v1",
+    "shutdown_v1"
+  ],
+  "event_topics": [
+    "newengine.diagnostics.job.begin.v1",
+    "newengine.diagnostics.job.end.v1",
+    "newengine.diagnostics.job.status.v1"
+  ],
+  "report": "cache/profiler/profiler_report_latest.json"
+}

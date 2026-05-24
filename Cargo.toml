@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["newengine-profiler-plugin"]
+
+[workspace.package]
+edition = "2021"
+license = "Proprietary"
+
+[workspace.dependencies]
+abi_stable = "0.11"
+newengine-plugin-api = { package = "newengine-plugin-kit", path = "../../NewEngine/neocore2/crates/newengine-plugin-kit" }

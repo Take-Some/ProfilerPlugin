@@ -1,0 +1,31 @@
+{
+  "enabled": true,
+  "ignore_self": true,
+  "capture": {
+    "service_calls": true,
+    "plugin_lifecycle": true,
+    "task_status_events": true,
+    "custom_events": true
+  },
+  "budgets": {
+    "service_call_ms": 8.0,
+    "plugin_lifecycle_ms": 16.67,
+    "custom_job_ms": 16.67,
+    "task_status_ms": 16.67
+  },
+  "diagnostics": {
+    "slow_job_warn_ms": 16.67,
+    "stale_active_job_ms": 1000.0,
+    "max_recent_jobs": 4096,
+    "max_recent_diagnostics": 1024,
+    "max_payload_preview_bytes": 2048
+  },
+  "report": {
+    "write_on_shutdown": true,
+    "write_json": true,
+    "write_markdown": true,
+    "directory": "cache/profiler",
+    "latest_json": "profiler_report_latest.json",
+    "latest_markdown": "profiler_report_latest.md"
+  }
+}
