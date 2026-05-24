@@ -10,12 +10,40 @@ use crate::util::{duration_ms, escape_md, format_json_scalar, path_to_string, un
 
 impl ProfilerRuntime {
     pub(crate) fn flush_report(&self, reason: &str) -> Result<Value, String> {
+        let shutdown_report = is_shutdown_report_reason(reason);
+        {
+            let state = self.lock_state();
+            if shutdown_report && state.shutdown_report_written {
+                return Ok(json!({
+                    "schema": "newengine.profiler.flush_report.result.v1",
+                    "reason": reason,
+                    "paths": state.last_report_paths.clone(),
+                    "json_bytes": 0,
+                    "markdown_bytes": 0,
+                    "skipped_duplicate_shutdown_report": true,
+                }));
+            }
+        }
+
         let (report, markdown, paths) = {
             let mut state = self.lock_state();
+            if shutdown_report && state.shutdown_report_written {
+                return Ok(json!({
+                    "schema": "newengine.profiler.flush_report.result.v1",
+                    "reason": reason,
+                    "paths": state.last_report_paths.clone(),
+                    "json_bytes": 0,
+                    "markdown_bytes": 0,
+                    "skipped_duplicate_shutdown_report": true,
+                }));
+            }
             let report = self.build_report_locked(&state, reason);
             let markdown = self.build_markdown_report(&report);
             let paths = self.write_report_files(&report, &markdown)?;
             state.reports_written = state.reports_written.saturating_add(1);
+            if shutdown_report {
+                state.shutdown_report_written = true;
+            }
             state.last_report_paths = Some(paths);
             (report, markdown, state.last_report_paths.as_ref().cloned())
         };
@@ -26,6 +54,7 @@ impl ProfilerRuntime {
             "paths": paths,
             "json_bytes": serde_json::to_vec(&report).map(|v| v.len()).unwrap_or(0),
             "markdown_bytes": markdown.len(),
+            "skipped_duplicate_shutdown_report": false,
         }))
     }
 
@@ -222,4 +251,8 @@ impl ProfilerRuntime {
     }
 
 
+}
+
+fn is_shutdown_report_reason(reason: &str) -> bool {
+    matches!(reason, "service.shutdown_v1" | "plugin.shutdown")
 }

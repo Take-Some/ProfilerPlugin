@@ -138,6 +138,7 @@ pub(crate) struct ProfilerState {
     pub(crate) completed: VecDeque<JobRecord>,
     pub(crate) diagnostics: VecDeque<ProfilerDiagnostic>,
     pub(crate) reports_written: u64,
+    pub(crate) shutdown_report_written: bool,
     pub(crate) last_report_paths: Option<ReportPaths>,
 }
 
@@ -153,6 +154,7 @@ impl ProfilerState {
             completed: VecDeque::new(),
             diagnostics: VecDeque::new(),
             reports_written: 0,
+            shutdown_report_written: false,
             last_report_paths: None,
         }
     }
