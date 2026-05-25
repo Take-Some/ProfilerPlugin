@@ -5,7 +5,7 @@ use newengine_plugin_api::{
     BackendRouteDescriptor, BackendServiceSpec, CapabilityDesc, CapabilityKind, CapabilityRole,
     ConfigApplyResultV1, ConfigBlobV1, ConfigDiagLevelV1, ConfigDiagV1, ConfigPatchV1,
     EventSinkV1Dyn, EventSinkV1_TO, HostApiV1, PluginDescriptor, PluginInfo, PluginKind,
-    PluginModule, PluginModuleV2, PluginModuleV3, ServiceV1Dyn, ServiceV1_TO,
+    PluginModule, ServiceV1Dyn, ServiceV1_TO,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -105,10 +105,10 @@ impl ProfilerPlugin {
     }
 }
 
-impl PluginModuleV3 for ProfilerPlugin {
-    fn descriptor_v3(&self) -> PluginDescriptor { self.descriptor_impl() }
+impl PluginModule for ProfilerPlugin {
+    fn descriptor(&self) -> PluginDescriptor { self.descriptor_impl() }
 
-    fn config_defaults_v1(&self) -> RResult<ConfigBlobV1, RString> {
+    fn config_defaults(&self) -> RResult<ConfigBlobV1, RString> {
         let defaults = match Self::parse_defaults() {
             Ok(v) => v,
             Err(e) => return RResult::RErr(RString::from(e)),
@@ -123,7 +123,7 @@ impl PluginModuleV3 for ProfilerPlugin {
         })
     }
 
-    fn config_apply_patches_v1(&self, base: &ConfigBlobV1, patches: RVec<ConfigPatchV1>) -> RResult<ConfigApplyResultV1, RString> {
+    fn config_apply_patches(&self, base: &ConfigBlobV1, patches: RVec<ConfigPatchV1>) -> RResult<ConfigApplyResultV1, RString> {
         if base.content_type.as_str() != CT_JSON {
             return RResult::RErr(RString::from("unsupported profiler config content_type"));
         }
@@ -167,13 +167,13 @@ impl PluginModuleV3 for ProfilerPlugin {
         })
     }
 
-    fn config_supports_live_update_v1(&self) -> bool { false }
+    fn config_supports_live_update(&self) -> bool { false }
 
-    fn config_update_live_v1(&mut self, _effective: &ConfigBlobV1) -> RResult<RVec<ConfigDiagV1>, RString> {
+    fn config_update_live(&mut self, _effective: &ConfigBlobV1) -> RResult<RVec<ConfigDiagV1>, RString> {
         RResult::RErr(RString::from("profiler live config update is not supported yet"))
     }
 
-    fn init_v3(&mut self, host: HostApiV1, effective: ConfigBlobV1) -> RResult<(), RString> {
+    fn init(&mut self, host: HostApiV1, effective: ConfigBlobV1) -> RResult<(), RString> {
         if effective.content_type.as_str() != CT_JSON {
             return RResult::RErr(RString::from("unsupported profiler config content_type"));
         }
@@ -206,27 +206,3 @@ impl PluginModuleV3 for ProfilerPlugin {
     }
 }
 
-impl PluginModuleV2 for ProfilerPlugin {
-    fn descriptor(&self) -> PluginDescriptor { self.descriptor_impl() }
-    fn init(&mut self, host: HostApiV1) -> RResult<(), RString> {
-        match self.init_with_cfg(host, ProfilerConfig::default()) {
-            Ok(()) => RResult::ROk(()),
-            Err(e) => RResult::RErr(RString::from(e)),
-        }
-    }
-    fn start(&mut self) -> RResult<(), RString> { <Self as PluginModuleV3>::start(self) }
-    fn fixed_update(&mut self, dt: f32) -> RResult<(), RString> { <Self as PluginModuleV3>::fixed_update(self, dt) }
-    fn update(&mut self, dt: f32) -> RResult<(), RString> { <Self as PluginModuleV3>::update(self, dt) }
-    fn render(&mut self, dt: f32) -> RResult<(), RString> { <Self as PluginModuleV3>::render(self, dt) }
-    fn shutdown(&mut self) { <Self as PluginModuleV3>::shutdown(self) }
-}
-
-impl PluginModule for ProfilerPlugin {
-    fn info(&self) -> PluginInfo { self.info_impl() }
-    fn init(&mut self, host: HostApiV1) -> RResult<(), RString> { <Self as PluginModuleV2>::init(self, host) }
-    fn start(&mut self) -> RResult<(), RString> { <Self as PluginModuleV3>::start(self) }
-    fn fixed_update(&mut self, dt: f32) -> RResult<(), RString> { <Self as PluginModuleV3>::fixed_update(self, dt) }
-    fn update(&mut self, dt: f32) -> RResult<(), RString> { <Self as PluginModuleV3>::update(self, dt) }
-    fn render(&mut self, dt: f32) -> RResult<(), RString> { <Self as PluginModuleV3>::render(self, dt) }
-    fn shutdown(&mut self) { <Self as PluginModuleV3>::shutdown(self) }
-}

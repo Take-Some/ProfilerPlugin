@@ -13,27 +13,19 @@ mod util;
 use abi_stable::sabi_trait::TD_Opaque;
 use abi_stable::std_types::RString;
 use newengine_plugin_api::{
-    export_plugin_root, PluginBootstrapPhase, PluginKind, PluginModuleDyn, PluginModuleV2Dyn,
-    PluginModuleV2_TO, PluginModuleV3Dyn, PluginModuleV3_TO, PluginModule_TO,
+    export_plugin_root, PluginBootstrapPhase, PluginKind, PluginModuleDyn, PluginModule_TO,
     PluginSignatureV1, PluginUiAssetsV1,
 };
 
 use crate::constants::{PROFILER_PLUGIN_ID, PROFILER_PLUGIN_NAME};
 use crate::plugin::ProfilerPlugin;
 
-export_plugin_root!(create_module, create_module_v2, create_module_v3, ui_assets_v1);
+export_plugin_root!(create_module, ui_assets_v1);
 
 extern "C" fn create_module() -> PluginModuleDyn<'static> {
     PluginModule_TO::from_value(ProfilerPlugin::default(), TD_Opaque)
 }
 
-extern "C" fn create_module_v2() -> PluginModuleV2Dyn<'static> {
-    PluginModuleV2_TO::from_value(ProfilerPlugin::default(), TD_Opaque)
-}
-
-extern "C" fn create_module_v3() -> PluginModuleV3Dyn<'static> {
-    PluginModuleV3_TO::from_value(ProfilerPlugin::default(), TD_Opaque)
-}
 
 extern "C" fn ui_assets_v1() -> PluginUiAssetsV1 {
     PluginUiAssetsV1::empty()
