@@ -298,20 +298,61 @@ impl ProfilerRuntime {
     }
 
     fn record_custom_event_locked(&self, state: &mut ProfilerState, topic: &str, value: Value) {
-        let id = state.local_id();
-        let budget = self.default_budget_for("custom_event");
+        let id = value
+            .get("id")
+            .or_else(|| value.get("task_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| state.local_id());
+        let category = sanitize_non_empty(
+            value.get("category").and_then(Value::as_str),
+            "event",
+        );
+        let source = sanitize_non_empty(
+            value.get("source").and_then(Value::as_str),
+            "event_bus",
+        );
+        let name = sanitize_non_empty(
+            value.get("name")
+                .or_else(|| value.get("label"))
+                .and_then(Value::as_str),
+            topic,
+        );
+        let detail = value
+            .get("detail")
+            .or_else(|| value.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("event observed")
+            .to_owned();
+        let elapsed_ms = value
+            .get("elapsed_ms")
+            .or_else(|| value.get("duration_ms"))
+            .or_else(|| value.get("total_ms"))
+            .and_then(Value::as_f64)
+            .map(|value| value.max(0.0));
+        let budget = value
+            .get("budget_ms")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| self.default_budget_for("custom_event"))
+            .max(0.001);
+        let load = elapsed_ms.map(|elapsed| elapsed / budget);
+        let now = unix_ms();
+        let started_unix_ms = elapsed_ms
+            .map(|elapsed| now.saturating_sub(elapsed.round().max(0.0) as u128))
+            .unwrap_or(now);
+
         let mut record = JobRecord {
             id,
-            name: topic.to_owned(),
-            category: "event".to_owned(),
-            source: "event_bus".to_owned(),
+            name,
+            category,
+            source,
             status: "completed".to_owned(),
-            detail: "event observed".to_owned(),
-            started_unix_ms: unix_ms(),
-            ended_unix_ms: Some(unix_ms()),
-            elapsed_ms: Some(0.0),
+            detail,
+            started_unix_ms,
+            ended_unix_ms: Some(now),
+            elapsed_ms: Some(elapsed_ms.unwrap_or(0.0)),
             budget_ms: budget,
-            load: Some(0.0),
+            load: Some(load.unwrap_or(0.0)),
             progress: None,
             payload_bytes: None,
             output_bytes: None,

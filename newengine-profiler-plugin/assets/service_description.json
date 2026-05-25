@@ -16,9 +16,27 @@
   "event_topics": [
     "newengine.diagnostics.job.begin.v1",
     "newengine.diagnostics.job.end.v1",
-    "newengine.diagnostics.job.status.v1"
+    "newengine.diagnostics.job.status.v1",
+    "newengine.diagnostics.profiler.sample.v1"
   ],
   "report": "cache/profiler/profiler_report_latest.json",
   "report_archive": "cache/profiler/profiler_report_<YYYYMMDD_HHMMSS_mmmZ>.zip",
-  "report_archive_manifest": "manifest.json"
+  "report_archive_manifest": "manifest.json",
+  "report_markdown": "cache/profiler/profiler_report_latest.md",
+  "report_csv": {
+    "jobs": "cache/profiler/profiler_jobs_latest.csv",
+    "top_offenders": "cache/profiler/profiler_top_offenders_latest.csv",
+    "categories": "cache/profiler/profiler_categories_latest.csv",
+    "sources": "cache/profiler/profiler_sources_latest.csv",
+    "active_jobs": "cache/profiler/profiler_active_jobs_latest.csv",
+    "timeline": "cache/profiler/profiler_timeline_latest.csv",
+    "diagnostics": "cache/profiler/profiler_diagnostics_latest.csv"
+  },
+  "report_archive_contains": [
+    "manifest.json",
+    "timestamped json",
+    "timestamped markdown",
+    "timestamped csv files",
+    "latest compatibility copies"
+  ]
 }

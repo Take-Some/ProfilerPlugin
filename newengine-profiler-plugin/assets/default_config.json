@@ -29,6 +29,14 @@
     "latest_markdown": "profiler_report_latest.md",
     "write_archive": true,
     "include_latest_in_archive": true,
-    "archive_prefix": "profiler_report"
+    "archive_prefix": "profiler_report",
+    "write_csv": true,
+    "latest_jobs_csv": "profiler_jobs_latest.csv",
+    "latest_categories_csv": "profiler_categories_latest.csv",
+    "latest_sources_csv": "profiler_sources_latest.csv",
+    "latest_offenders_csv": "profiler_top_offenders_latest.csv",
+    "latest_active_csv": "profiler_active_jobs_latest.csv",
+    "latest_diagnostics_csv": "profiler_diagnostics_latest.csv",
+    "latest_timeline_csv": "profiler_timeline_latest.csv"
   }
 }

@@ -65,6 +65,8 @@ pub(crate) struct ReportConfig {
     #[serde(default = "default_true")]
     pub(crate) write_markdown: bool,
     #[serde(default = "default_true")]
+    pub(crate) write_csv: bool,
+    #[serde(default = "default_true")]
     pub(crate) write_archive: bool,
     #[serde(default = "default_true")]
     pub(crate) include_latest_in_archive: bool,
@@ -76,6 +78,20 @@ pub(crate) struct ReportConfig {
     pub(crate) latest_json: String,
     #[serde(default = "default_latest_markdown")]
     pub(crate) latest_markdown: String,
+    #[serde(default = "default_latest_jobs_csv")]
+    pub(crate) latest_jobs_csv: String,
+    #[serde(default = "default_latest_categories_csv")]
+    pub(crate) latest_categories_csv: String,
+    #[serde(default = "default_latest_sources_csv")]
+    pub(crate) latest_sources_csv: String,
+    #[serde(default = "default_latest_offenders_csv")]
+    pub(crate) latest_offenders_csv: String,
+    #[serde(default = "default_latest_active_csv")]
+    pub(crate) latest_active_csv: String,
+    #[serde(default = "default_latest_diagnostics_csv")]
+    pub(crate) latest_diagnostics_csv: String,
+    #[serde(default = "default_latest_timeline_csv")]
+    pub(crate) latest_timeline_csv: String,
 }
 
 impl Default for ProfilerConfig {
@@ -131,12 +147,20 @@ impl Default for ReportConfig {
             write_on_shutdown: true,
             write_json: true,
             write_markdown: true,
+            write_csv: true,
             write_archive: true,
             include_latest_in_archive: true,
             archive_prefix: default_archive_prefix(),
             directory: default_report_directory(),
             latest_json: default_latest_json(),
             latest_markdown: default_latest_markdown(),
+            latest_jobs_csv: default_latest_jobs_csv(),
+            latest_categories_csv: default_latest_categories_csv(),
+            latest_sources_csv: default_latest_sources_csv(),
+            latest_offenders_csv: default_latest_offenders_csv(),
+            latest_active_csv: default_latest_active_csv(),
+            latest_diagnostics_csv: default_latest_diagnostics_csv(),
+            latest_timeline_csv: default_latest_timeline_csv(),
         }
     }
 }
@@ -155,3 +179,11 @@ fn default_report_directory() -> String { "cache/profiler".to_owned() }
 fn default_latest_json() -> String { "profiler_report_latest.json".to_owned() }
 fn default_latest_markdown() -> String { "profiler_report_latest.md".to_owned() }
 
+
+fn default_latest_jobs_csv() -> String { "profiler_jobs_latest.csv".to_owned() }
+fn default_latest_categories_csv() -> String { "profiler_categories_latest.csv".to_owned() }
+fn default_latest_sources_csv() -> String { "profiler_sources_latest.csv".to_owned() }
+fn default_latest_offenders_csv() -> String { "profiler_top_offenders_latest.csv".to_owned() }
+fn default_latest_active_csv() -> String { "profiler_active_jobs_latest.csv".to_owned() }
+fn default_latest_diagnostics_csv() -> String { "profiler_diagnostics_latest.csv".to_owned() }
+fn default_latest_timeline_csv() -> String { "profiler_timeline_latest.csv".to_owned() }

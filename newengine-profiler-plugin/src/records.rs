@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
 
 use crate::util::unix_ms;
@@ -133,6 +133,10 @@ pub(crate) struct ReportPaths {
     pub(crate) markdown_latest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) markdown_timestamped: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) csv_latest: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) csv_timestamped: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug)]
