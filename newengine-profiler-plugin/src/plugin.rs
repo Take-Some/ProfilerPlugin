@@ -37,13 +37,13 @@ impl ProfilerPlugin {
         )
         .push(
             CapabilityDesc::new(
-                "host.diagnostics.jobs.v1",
+                "host.events.v1",
                 CapabilityRole::Requires,
                 CapabilityKind::EventsV1,
                 1,
             )
             .with_json(RString::from(
-                r#"{"schema":"newengine.profiler.event_requirements.v1","topics":["newengine.diagnostics.job.begin.v1","newengine.diagnostics.job.end.v1","newengine.diagnostics.job.status.v1"]}"#,
+                r#"{"schema":"newengine.profiler.event_requirements.v1","topics":["newengine.diagnostics.job.begin.v1","newengine.diagnostics.job.end.v1","newengine.diagnostics.job.status.v1","newengine.diagnostics.profiler.sample.v1"]}"#,
             )),
         )
         .push(CapabilityDesc::backend_route(

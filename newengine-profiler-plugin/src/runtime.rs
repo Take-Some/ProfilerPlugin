@@ -17,6 +17,67 @@ use crate::util::{
 
 pub(crate) static RUNTIME: OnceLock<Arc<ProfilerRuntime>> = OnceLock::new();
 
+fn event_elapsed_ms(value: &Value) -> Option<f64> {
+    const PATHS: &[&str] = &[
+        "/elapsed_ms",
+        "/duration_ms",
+        "/total_ms",
+        "/metadata/elapsed_ms",
+        "/metadata/duration_ms",
+        "/metadata/total_ms",
+    ];
+    for path in PATHS {
+        if let Some(ms) = value.pointer(path).and_then(value_to_f64_ms) {
+            return Some(ms.max(0.0));
+        }
+    }
+    value
+        .get("detail")
+        .or_else(|| value.get("message"))
+        .and_then(Value::as_str)
+        .and_then(parse_first_ms_from_text)
+        .map(|ms| ms.max(0.0))
+}
+
+fn value_to_f64_ms(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()))
+}
+
+fn parse_first_ms_from_text(text: &str) -> Option<f64> {
+    let parts = text.split_whitespace().collect::<Vec<_>>();
+    for window in parts.windows(2) {
+        let unit = window[1].trim_matches(|c: char| !c.is_ascii_alphabetic()).to_ascii_lowercase();
+        if unit == "ms" || unit == "msec" || unit == "millisecond" || unit == "milliseconds" {
+            let number = window[0].trim_matches(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'));
+            if let Ok(value) = number.parse::<f64>() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn parse_breakdown_parts(breakdown: &str) -> Vec<(String, f64)> {
+    let mut out = Vec::new();
+    for token in breakdown.split_whitespace() {
+        let Some((name, raw_ms)) = token.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let raw_ms = raw_ms.trim().strip_suffix("ms").unwrap_or(raw_ms.trim());
+        let Ok(elapsed_ms) = raw_ms.parse::<f64>() else {
+            continue;
+        };
+        out.push((name.to_owned(), elapsed_ms.max(0.0)));
+    }
+    out
+}
+
 pub(crate) struct ProfilerRuntime {
     pub(crate) cfg: ProfilerConfig,
     state: Mutex<ProfilerState>,
@@ -324,12 +385,7 @@ impl ProfilerRuntime {
             .and_then(Value::as_str)
             .unwrap_or("event observed")
             .to_owned();
-        let elapsed_ms = value
-            .get("elapsed_ms")
-            .or_else(|| value.get("duration_ms"))
-            .or_else(|| value.get("total_ms"))
-            .and_then(Value::as_f64)
-            .map(|value| value.max(0.0));
+        let elapsed_ms = event_elapsed_ms(&value);
         let budget = value
             .get("budget_ms")
             .and_then(Value::as_f64)
@@ -360,7 +416,53 @@ impl ProfilerRuntime {
             metadata: value,
         };
         trim_payload_preview(&mut record.metadata, self.cfg.diagnostics.max_payload_preview_bytes);
-        self.complete_job_locked(state, record);
+        self.complete_job_locked(state, record.clone());
+        self.record_breakdown_parts_locked(state, &record);
+    }
+
+    fn record_breakdown_parts_locked(&self, state: &mut ProfilerState, parent: &JobRecord) {
+        let Some(breakdown) = parent
+            .metadata
+            .get("breakdown")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+
+        for (idx, (part_name, elapsed_ms)) in parse_breakdown_parts(breakdown).into_iter().enumerate() {
+            let budget_ms = parent.budget_ms.max(0.001);
+            let now = unix_ms();
+            let id = format!("{}::part::{}", parent.id, idx + 1);
+            let mut metadata = json!({
+                "schema": "newengine.profiler.breakdown_part.v1",
+                "parent_id": parent.id.clone(),
+                "parent_name": parent.name.clone(),
+                "part": part_name.clone(),
+                "elapsed_ms": elapsed_ms,
+                "source_event": parent.metadata.clone(),
+            });
+            trim_payload_preview(&mut metadata, self.cfg.diagnostics.max_payload_preview_bytes);
+            self.complete_job_locked(state, JobRecord {
+                id,
+                name: format!("{}/{}", parent.name, part_name),
+                category: format!("{}.breakdown", parent.category),
+                source: parent.source.clone(),
+                status: "completed".to_owned(),
+                detail: format!("breakdown part from '{}'", parent.name),
+                started_unix_ms: now.saturating_sub(elapsed_ms.round().max(0.0) as u128),
+                ended_unix_ms: Some(now),
+                elapsed_ms: Some(elapsed_ms),
+                budget_ms,
+                load: Some(elapsed_ms / budget_ms),
+                progress: None,
+                payload_bytes: None,
+                output_bytes: None,
+                error: None,
+                metadata,
+            });
+        }
     }
 
     fn complete_job_locked(&self, state: &mut ProfilerState, mut record: JobRecord) {
