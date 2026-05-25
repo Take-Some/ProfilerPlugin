@@ -15,6 +15,8 @@ pub(crate) struct ProfilerConfig {
     #[serde(default)]
     pub(crate) diagnostics: DiagnosticsConfig,
     #[serde(default)]
+    pub(crate) scheduling: SchedulingConfig,
+    #[serde(default)]
     pub(crate) report: ReportConfig,
 }
 
@@ -57,6 +59,20 @@ pub(crate) struct DiagnosticsConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct SchedulingConfig {
+    #[serde(default = "default_true")]
+    pub(crate) prefer_engine_jobs: bool,
+    #[serde(default = "default_true")]
+    pub(crate) require_engine_jobs: bool,
+    #[serde(default = "default_flush_job_budget_ms")]
+    pub(crate) flush_job_budget_ms: f64,
+    #[serde(default = "default_service_flush_mode")]
+    pub(crate) service_flush_mode: String,
+    #[serde(default = "default_shutdown_flush_mode")]
+    pub(crate) shutdown_flush_mode: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct ReportConfig {
     #[serde(default = "default_true")]
     pub(crate) write_on_shutdown: bool,
@@ -92,6 +108,10 @@ pub(crate) struct ReportConfig {
     pub(crate) latest_diagnostics_csv: String,
     #[serde(default = "default_latest_timeline_csv")]
     pub(crate) latest_timeline_csv: String,
+    #[serde(default = "default_latest_methods_csv")]
+    pub(crate) latest_methods_csv: String,
+    #[serde(default = "default_latest_budget_violations_csv")]
+    pub(crate) latest_budget_violations_csv: String,
 }
 
 impl Default for ProfilerConfig {
@@ -102,6 +122,7 @@ impl Default for ProfilerConfig {
             capture: CaptureConfig::default(),
             budgets: BudgetConfig::default(),
             diagnostics: DiagnosticsConfig::default(),
+            scheduling: SchedulingConfig::default(),
             report: ReportConfig::default(),
         })
     }
@@ -141,6 +162,18 @@ impl Default for DiagnosticsConfig {
     }
 }
 
+impl Default for SchedulingConfig {
+    fn default() -> Self {
+        Self {
+            prefer_engine_jobs: true,
+            require_engine_jobs: true,
+            flush_job_budget_ms: default_flush_job_budget_ms(),
+            service_flush_mode: default_service_flush_mode(),
+            shutdown_flush_mode: default_shutdown_flush_mode(),
+        }
+    }
+}
+
 impl Default for ReportConfig {
     fn default() -> Self {
         Self {
@@ -161,6 +194,8 @@ impl Default for ReportConfig {
             latest_active_csv: default_latest_active_csv(),
             latest_diagnostics_csv: default_latest_diagnostics_csv(),
             latest_timeline_csv: default_latest_timeline_csv(),
+            latest_methods_csv: default_latest_methods_csv(),
+            latest_budget_violations_csv: default_latest_budget_violations_csv(),
         }
     }
 }
@@ -174,6 +209,9 @@ fn default_stale_active_job_ms() -> f64 { 1000.0 }
 fn default_max_recent_jobs() -> usize { 4096 }
 fn default_max_recent_diagnostics() -> usize { 1024 }
 fn default_max_payload_preview_bytes() -> usize { 2048 }
+fn default_flush_job_budget_ms() -> f64 { 250.0 }
+fn default_service_flush_mode() -> String { "engine_jobs".to_owned() }
+fn default_shutdown_flush_mode() -> String { "sync_final".to_owned() }
 fn default_archive_prefix() -> String { "profiler_report".to_owned() }
 fn default_report_directory() -> String { "cache/profiler".to_owned() }
 fn default_latest_json() -> String { "profiler_report_latest.json".to_owned() }
@@ -187,3 +225,5 @@ fn default_latest_offenders_csv() -> String { "profiler_top_offenders_latest.csv
 fn default_latest_active_csv() -> String { "profiler_active_jobs_latest.csv".to_owned() }
 fn default_latest_diagnostics_csv() -> String { "profiler_diagnostics_latest.csv".to_owned() }
 fn default_latest_timeline_csv() -> String { "profiler_timeline_latest.csv".to_owned() }
+fn default_latest_methods_csv() -> String { "profiler_methods_latest.csv".to_owned() }
+fn default_latest_budget_violations_csv() -> String { "profiler_budget_violations_latest.csv".to_owned() }

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use crate::config::ProfilerConfig;
 use crate::constants::*;
 use crate::runtime::{ProfilerRuntime, RUNTIME};
+use crate::scheduler::HostJobScheduler;
 use crate::service::{ProfilerEventSink, ProfilerService};
 use crate::util::{config_diag, merge_patch};
 
@@ -43,7 +44,18 @@ impl ProfilerPlugin {
                 1,
             )
             .with_json(RString::from(
-                r#"{"schema":"newengine.profiler.event_requirements.v1","topics":["newengine.diagnostics.job.begin.v1","newengine.diagnostics.job.end.v1","newengine.diagnostics.job.status.v1","newengine.diagnostics.profiler.sample.v1"]}"#,
+                r#"{"schema":"newengine.profiler.event_requirements.v1","topics":["engine.task.event.v1","engine.jobs.event.v1","newengine.diagnostics.job.begin.v1","newengine.diagnostics.job.end.v1","newengine.diagnostics.job.status.v1","newengine.diagnostics.profiler.sample.v1"]}"#,
+            )),
+        )
+        .push(
+            CapabilityDesc::new(
+                "engine.jobs",
+                CapabilityRole::Requires,
+                CapabilityKind::ServiceV1,
+                1,
+            )
+            .with_json(RString::from(
+                r#"{"schema":"newengine.profiler.job_scheduler_requirement.v1","gateway":"engine.jobs","methods":["job.invoke_service_v1","job.start_v1","job.progress_event_v1","job.status_json_v1"],"purpose":"execute profiler report build/write work on engine-owned job workers instead of hidden plugin background load"}"#,
             )),
         )
         .push(CapabilityDesc::backend_route(
@@ -70,7 +82,8 @@ impl ProfilerPlugin {
             return Ok(());
         }
 
-        let rt = Arc::new(ProfilerRuntime::new(cfg.clone()));
+        let scheduler = HostJobScheduler::from_host(&host);
+        let rt = Arc::new(ProfilerRuntime::new(cfg.clone(), Some(scheduler)));
         let _ = RUNTIME.set(rt);
 
         let service: ServiceV1Dyn<'static> = ServiceV1_TO::from_value(ProfilerService::default(), TD_Opaque);
@@ -84,10 +97,12 @@ impl ProfilerPlugin {
             .map_err(|e| e.to_string())?;
 
         (host.log_info)(RString::from(format!(
-            "profiler: registered service='{}' gateway='{}' report_dir='{}' diagnostics='detailed-status'",
+            "profiler: registered service='{}' gateway='{}' report_dir='{}' diagnostics='detailed-status' flush_mode='{}' jobs_required={}",
             PROFILER_SERVICE_ID,
             ENGINE_PROFILER_GATEWAY_ID,
-            cfg.report.directory,
+            &cfg.report.directory,
+            &cfg.scheduling.service_flush_mode,
+            cfg.scheduling.require_engine_jobs,
         )));
 
         self.initialized = true;
@@ -199,7 +214,11 @@ impl PluginModule for ProfilerPlugin {
     fn shutdown(&mut self) {
         if let Some(rt) = RUNTIME.get() {
             if rt.cfg.report.write_on_shutdown {
-                let _ = rt.flush_report("plugin.shutdown");
+                if rt.cfg.scheduling.shutdown_flush_mode.eq_ignore_ascii_case("engine_jobs") {
+                    let _ = rt.flush_report_async("plugin.shutdown");
+                } else {
+                    let _ = rt.flush_report("plugin.shutdown");
+                }
             }
         }
         self.initialized = false;

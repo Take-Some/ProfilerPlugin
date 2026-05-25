@@ -4,13 +4,15 @@ use std::time::Instant;
 
 use crate::config::ProfilerConfig;
 use crate::constants::{
-    ENGINE_PROFILER_GATEWAY_ID, PROFILER_PLUGIN_ID, PROFILER_SERVICE_ID, TOPIC_JOB_BEGIN,
-    TOPIC_JOB_END, TOPIC_JOB_STATUS,
+    ENGINE_JOBS_GATEWAY_ID, ENGINE_PROFILER_GATEWAY_ID, JOBS_INVOKE_SERVICE_V1,
+    METHOD_FLUSH_REPORT_SYNC_V1, PROFILER_PLUGIN_ID, PROFILER_SERVICE_ID, TOPIC_ENGINE_JOB_EVENT,
+    TOPIC_ENGINE_TASK_EVENT, TOPIC_JOB_BEGIN, TOPIC_JOB_END, TOPIC_JOB_STATUS,
 };
 use crate::records::{
-    ActiveJob, JobBeginWire, JobEndWire, JobRecord, JobStatusWire, ProfilerDiagnostic,
-    ProfilerState,
+    ActiveJob, FlushRequestRecord, JobBeginWire, JobEndWire, JobRecord, JobStatusWire,
+    ProfilerDiagnostic, ProfilerState,
 };
+use crate::scheduler::HostJobScheduler;
 use crate::util::{
     begin_to_json, duration_ms, merge_metadata, sanitize_non_empty, trim_payload_preview, unix_ms,
 };
@@ -80,13 +82,15 @@ fn parse_breakdown_parts(breakdown: &str) -> Vec<(String, f64)> {
 
 pub(crate) struct ProfilerRuntime {
     pub(crate) cfg: ProfilerConfig,
+    scheduler: Option<HostJobScheduler>,
     state: Mutex<ProfilerState>,
 }
 
 impl ProfilerRuntime {
-    pub(crate) fn new(cfg: ProfilerConfig) -> Self {
+    pub(crate) fn new(cfg: ProfilerConfig, scheduler: Option<HostJobScheduler>) -> Self {
         Self {
             cfg,
+            scheduler,
             state: Mutex::new(ProfilerState::new()),
         }
     }
@@ -129,6 +133,33 @@ impl ProfilerRuntime {
         }
 
         match topic {
+            TOPIC_ENGINE_TASK_EVENT => {
+                if let Err(e) = self.record_engine_task_event_locked(&mut state, parsed) {
+                    state.malformed_events = state.malformed_events.saturating_add(1);
+                    Self::push_diag_locked(
+                        &self.cfg,
+                        &mut state,
+                        "warn",
+                        "bad_engine_task_event",
+                        format!("bad engine task event: {e}"),
+                        None,
+                    );
+                }
+            }
+            TOPIC_ENGINE_JOB_EVENT => {
+                let event = parsed.get("event").cloned().unwrap_or(parsed);
+                if let Err(e) = self.record_engine_task_event_locked(&mut state, event) {
+                    state.malformed_events = state.malformed_events.saturating_add(1);
+                    Self::push_diag_locked(
+                        &self.cfg,
+                        &mut state,
+                        "warn",
+                        "bad_engine_job_event",
+                        format!("bad engine job event: {e}"),
+                        None,
+                    );
+                }
+            }
             TOPIC_JOB_BEGIN => {
                 if let Err(e) = self.record_begin_value_locked(&mut state, parsed) {
                     state.malformed_events = state.malformed_events.saturating_add(1);
@@ -358,6 +389,75 @@ impl ProfilerRuntime {
         Ok(())
     }
 
+    fn record_engine_task_event_locked(&self, state: &mut ProfilerState, value: Value) -> Result<(), String> {
+        let id = value
+            .get("task_id")
+            .or_else(|| value.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| "engine task event has no task_id".to_owned())?;
+        let phase = value
+            .get("phase")
+            .and_then(Value::as_str)
+            .unwrap_or("Running")
+            .to_ascii_lowercase();
+        let category = sanitize_non_empty(value.get("category").and_then(Value::as_str), "engine_task");
+        let source = sanitize_non_empty(value.get("source").and_then(Value::as_str), "engine.task.event");
+        let label = sanitize_non_empty(
+            value.get("name").and_then(Value::as_str),
+            id.as_str(),
+        );
+        let detail = value
+            .get("detail")
+            .or_else(|| value.get("status"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let progress = value.get("progress_01").and_then(Value::as_f64);
+        let budget = value
+            .get("budget_ms")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| self.default_budget_for(category.as_str()))
+            .max(0.001);
+
+        if matches!(phase.as_str(), "completed" | "failed" | "cancelled" | "canceled") {
+            let status = if phase == "cancelled" || phase == "canceled" {
+                "cancelled"
+            } else {
+                phase.as_str()
+            };
+            let end_payload = json!({
+                "id": id,
+                "status": status,
+                "detail": detail,
+                "metadata": value,
+            });
+            self.record_end_value_locked(state, end_payload)?;
+            return Ok(());
+        }
+
+        if let Some(active) = state.active.get_mut(&id) {
+            active.record.status = phase;
+            active.record.name = label;
+            active.record.detail = detail;
+            active.record.progress = progress;
+            active.record.budget_ms = budget;
+            active.record.metadata = merge_metadata(active.record.metadata.clone(), value);
+            return Ok(());
+        }
+
+        let begin = json!({
+            "id": id,
+            "name": label,
+            "category": category,
+            "source": source,
+            "detail": detail,
+            "budget_ms": budget,
+            "metadata": value,
+        });
+        self.record_begin_value_locked(state, begin)
+    }
+
     fn record_custom_event_locked(&self, state: &mut ProfilerState, topic: &str, value: Value) {
         let id = value
             .get("id")
@@ -504,6 +604,253 @@ impl ProfilerRuntime {
         }
     }
 
+
+    pub(crate) fn flush_report_service(&self, reason: &str) -> Result<Value, String> {
+        if self.cfg.scheduling.service_flush_mode.eq_ignore_ascii_case("sync") {
+            self.flush_report(reason)
+        } else {
+            self.flush_report_async(reason)
+        }
+    }
+
+    pub(crate) fn flush_report_async(&self, reason: &str) -> Result<Value, String> {
+        let (request_id, job_id, requested_unix_ms) = {
+            let mut state = self.lock_state();
+            let request_id = state.local_id();
+            let job_id = format!("{request_id}.engine-jobs-flush");
+            (request_id, job_id, unix_ms())
+        };
+
+        let job_reason = format!("{reason}.engine_jobs");
+        let job_request = json!({
+            "schema": "newengine.jobs.service_call.request.v1",
+            "job_id": job_id.clone(),
+            "name": "North Star Profiler report flush",
+            "owner": PROFILER_SERVICE_ID,
+            "category": "profiler.report.flush",
+            "lane": "plugin",
+            "priority": "background",
+            "can_pause": false,
+            "can_cancel": true,
+            "target": {
+                "gateway": ENGINE_PROFILER_GATEWAY_ID,
+                "method": METHOD_FLUSH_REPORT_SYNC_V1,
+                "payload_json": {
+                    "schema": "newengine.profiler.flush_report.request.v1",
+                    "reason": job_reason,
+                    "request_id": request_id.clone()
+                }
+            }
+        });
+
+        self.record_flush_request(FlushRequestRecord {
+            request_id: request_id.clone(),
+            job_id: job_id.clone(),
+            reason: reason.to_owned(),
+            scheduling_mode: format!("{ENGINE_JOBS_GATEWAY_ID}/{JOBS_INVOKE_SERVICE_V1}"),
+            status: "scheduling".to_owned(),
+            requested_unix_ms,
+            completed_unix_ms: None,
+            engine_jobs_response: None,
+            error: None,
+        });
+
+        if self.cfg.scheduling.prefer_engine_jobs {
+            if let Some(scheduler) = self.scheduler {
+                match scheduler.invoke_service_job(job_request.clone()) {
+                    Ok(response) => {
+                        let accepted = response.get("accepted").and_then(Value::as_bool).unwrap_or(true);
+                        if accepted {
+                            self.record_flush_request(FlushRequestRecord {
+                                request_id: request_id.clone(),
+                                job_id: job_id.clone(),
+                                reason: reason.to_owned(),
+                                scheduling_mode: format!("{ENGINE_JOBS_GATEWAY_ID}/{JOBS_INVOKE_SERVICE_V1}"),
+                                status: "scheduled".to_owned(),
+                                requested_unix_ms,
+                                completed_unix_ms: None,
+                                engine_jobs_response: Some(response.clone()),
+                                error: None,
+                            });
+                        } else {
+                            let error = response
+                                .get("detail")
+                                .and_then(Value::as_str)
+                                .unwrap_or("engine.jobs rejected profiler service-call job")
+                                .to_owned();
+                            self.record_flush_request(FlushRequestRecord {
+                                request_id: request_id.clone(),
+                                job_id: job_id.clone(),
+                                reason: reason.to_owned(),
+                                scheduling_mode: format!("{ENGINE_JOBS_GATEWAY_ID}/{JOBS_INVOKE_SERVICE_V1}"),
+                                status: "rejected".to_owned(),
+                                requested_unix_ms,
+                                completed_unix_ms: Some(unix_ms()),
+                                engine_jobs_response: Some(response.clone()),
+                                error: Some(error),
+                            });
+                        }
+                        return Ok(json!({
+                            "schema": "newengine.profiler.flush_report.async_result.v1",
+                            "accepted": accepted,
+                            "mode": "engine_jobs",
+                            "engine_jobs_gateway": ENGINE_JOBS_GATEWAY_ID,
+                            "engine_jobs_method": JOBS_INVOKE_SERVICE_V1,
+                            "request_id": request_id,
+                            "job_id": job_id,
+                            "response": response,
+                        }));
+                    }
+                    Err(e) => {
+                        self.record_flush_request(FlushRequestRecord {
+                            request_id: request_id.clone(),
+                            job_id: job_id.clone(),
+                            reason: reason.to_owned(),
+                            scheduling_mode: format!("{ENGINE_JOBS_GATEWAY_ID}/{JOBS_INVOKE_SERVICE_V1}"),
+                            status: "rejected".to_owned(),
+                            requested_unix_ms,
+                            completed_unix_ms: Some(unix_ms()),
+                            engine_jobs_response: None,
+                            error: Some(e.clone()),
+                        });
+                        return Ok(json!({
+                            "schema": "newengine.profiler.flush_report.async_result.v1",
+                            "accepted": false,
+                            "mode": "engine_jobs_required",
+                            "engine_jobs_gateway": ENGINE_JOBS_GATEWAY_ID,
+                            "engine_jobs_method": JOBS_INVOKE_SERVICE_V1,
+                            "request_id": request_id,
+                            "job_id": job_id,
+                            "error": e,
+                        }));
+                    }
+                }
+            } else if self.cfg.scheduling.require_engine_jobs {
+                let error = "engine.jobs scheduler is unavailable; profiler-owned background fallback is not allowed".to_owned();
+                self.record_flush_request(FlushRequestRecord {
+                    request_id: request_id.clone(),
+                    job_id: job_id.clone(),
+                    reason: reason.to_owned(),
+                    scheduling_mode: "engine_jobs_unavailable".to_owned(),
+                    status: "rejected".to_owned(),
+                    requested_unix_ms,
+                    completed_unix_ms: Some(unix_ms()),
+                    engine_jobs_response: None,
+                    error: Some(error.clone()),
+                });
+                return Ok(json!({
+                    "schema": "newengine.profiler.flush_report.async_result.v1",
+                    "accepted": false,
+                    "mode": "engine_jobs_required",
+                    "engine_jobs_gateway": ENGINE_JOBS_GATEWAY_ID,
+                    "engine_jobs_method": JOBS_INVOKE_SERVICE_V1,
+                    "request_id": request_id,
+                    "job_id": job_id,
+                    "error": error,
+                }));
+            }
+        }
+
+        let error = "async profiler flush requires engine.jobs; no profiler-owned background fallback is allowed".to_owned();
+        self.record_flush_request(FlushRequestRecord {
+            request_id: request_id.clone(),
+            job_id: job_id.clone(),
+            reason: reason.to_owned(),
+            scheduling_mode: "engine_jobs_required".to_owned(),
+            status: "rejected".to_owned(),
+            requested_unix_ms,
+            completed_unix_ms: Some(unix_ms()),
+            engine_jobs_response: None,
+            error: Some(error.clone()),
+        });
+        Ok(json!({
+            "schema": "newengine.profiler.flush_report.async_result.v1",
+            "accepted": false,
+            "mode": "engine_jobs_required",
+            "engine_jobs_gateway": ENGINE_JOBS_GATEWAY_ID,
+            "engine_jobs_method": JOBS_INVOKE_SERVICE_V1,
+            "request_id": request_id,
+            "job_id": job_id,
+            "error": error,
+        }))
+    }
+
+    pub(crate) fn flush_status(&self) -> Value {
+        let state = self.lock_state();
+        json!({
+            "schema": "newengine.profiler.flush_status.v1",
+            "reports_written": state.reports_written,
+            "reports_in_progress": state.reports_in_progress,
+            "reports_scheduled": state.reports_scheduled,
+            "reports_failed": state.reports_failed,
+            "last_report_paths": state.last_report_paths.clone(),
+            "recent_flush_requests": state.flush_requests.iter().rev().take(128).collect::<Vec<_>>(),
+            "scheduling": self.cfg.scheduling.clone(),
+        })
+    }
+
+    fn record_flush_request(&self, record: FlushRequestRecord) {
+        let mut state = self.lock_state();
+        let mut should_count_status = true;
+        if let Some(existing) = state.flush_requests.iter_mut().rev().find(|it| it.request_id == record.request_id) {
+            // A fast engine.jobs worker may finish before the scheduling call returns.
+            // In that case, keep the terminal state and only attach the scheduler response.
+            if matches!(existing.status.as_str(), "completed" | "failed") && record.status == "scheduled" {
+                if existing.engine_jobs_response.is_none() {
+                    existing.engine_jobs_response = record.engine_jobs_response;
+                }
+                existing.scheduling_mode = record.scheduling_mode;
+                should_count_status = false;
+            } else {
+                let old_status = existing.status.clone();
+                *existing = record.clone();
+                should_count_status = old_status != record.status;
+            }
+        } else {
+            state.flush_requests.push_back(record.clone());
+            while state.flush_requests.len() > 256 {
+                state.flush_requests.pop_front();
+            }
+        }
+
+        if should_count_status {
+            match record.status.as_str() {
+                "scheduled" => state.reports_scheduled = state.reports_scheduled.saturating_add(1),
+                "failed" | "rejected" => state.reports_failed = state.reports_failed.saturating_add(1),
+                _ => {}
+            }
+        }
+        if let Some(error) = record.error.clone() {
+            Self::push_diag_locked(
+                &self.cfg,
+                &mut state,
+                if record.status == "rejected" { "warn" } else { "error" },
+                "profiler_flush_schedule_status",
+                format!("profiler report flush request '{}' status='{}': {}", record.request_id, record.status, error),
+                Some(record.job_id.clone()),
+            );
+        }
+    }
+
+
+    pub(crate) fn mark_flush_request_completed(&self, request_id: &str, error: Option<String>) {
+        let mut state = self.lock_state();
+        let mut failed = false;
+        if let Some(record) = state.flush_requests.iter_mut().rev().find(|it| it.request_id == request_id) {
+            record.completed_unix_ms = Some(unix_ms());
+            if let Some(error) = error {
+                record.status = "failed".to_owned();
+                record.error = Some(error);
+                failed = true;
+            } else {
+                record.status = "completed".to_owned();
+            }
+        }
+        if failed {
+            state.reports_failed = state.reports_failed.saturating_add(1);
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> Value {
         let state = self.lock_state();
         self.snapshot_locked(&state)
@@ -530,6 +877,10 @@ impl ProfilerRuntime {
             "active_count": state.active.len(),
             "completed_count": state.completed.len(),
             "reports_written": state.reports_written,
+            "reports_in_progress": state.reports_in_progress,
+            "reports_scheduled": state.reports_scheduled,
+            "reports_failed": state.reports_failed,
+            "recent_flush_requests": state.flush_requests.iter().rev().take(64).collect::<Vec<_>>(),
             "active_jobs": active_jobs,
             "recent_completed": recent_completed,
             "diagnostics": diagnostics,
@@ -586,6 +937,12 @@ impl ProfilerRuntime {
             "malformed_events": state.malformed_events,
             "stale_active_jobs": stale,
             "report_directory": self.cfg.report.directory.clone(),
+            "reports_written": state.reports_written,
+            "reports_in_progress": state.reports_in_progress,
+            "reports_scheduled": state.reports_scheduled,
+            "reports_failed": state.reports_failed,
+            "scheduling": self.cfg.scheduling.clone(),
+            "recent_flush_requests": state.flush_requests.iter().rev().take(64).collect::<Vec<_>>(),
             "recent_diagnostics": state.diagnostics.iter().rev().take(512).collect::<Vec<_>>(),
         })
     }
@@ -595,6 +952,7 @@ impl ProfilerRuntime {
             "service_call" => self.cfg.budgets.service_call_ms,
             "plugin_lifecycle" => self.cfg.budgets.plugin_lifecycle_ms,
             "task_status" => self.cfg.budgets.task_status_ms,
+            "profiler.report.flush" => self.cfg.scheduling.flush_job_budget_ms,
             _ => self.cfg.budgets.custom_job_ms,
         }
         .max(0.001)

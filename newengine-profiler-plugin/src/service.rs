@@ -1,7 +1,7 @@
 use abi_stable::std_types::{RResult, RString};
 use abi_stable::StableAbi;
 use newengine_plugin_api::{Blob, CapabilityId, EventSinkV1, MethodName, ServiceV1};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::constants::*;
 use crate::runtime::RUNTIME;
@@ -39,7 +39,20 @@ impl ServiceV1 for ProfilerService {
             METHOD_JOB_STATUS_JSON_V1 => rt.record_status_value(payload.as_slice()),
             METHOD_SNAPSHOT_JSON_V1 => Ok(rt.snapshot()),
             METHOD_DIAGNOSTICS_JSON_V1 => Ok(rt.diagnostics()),
-            METHOD_FLUSH_REPORT_V1 => rt.flush_report("service.flush_report"),
+            METHOD_FLUSH_STATUS_JSON_V1 => Ok(rt.flush_status()),
+            METHOD_FLUSH_REPORT_V1 => rt.flush_report_service(&flush_reason(payload.as_slice(), "service.flush_report_v1")),
+            METHOD_FLUSH_REPORT_ASYNC_V1 => rt.flush_report_async(&flush_reason(payload.as_slice(), "service.flush_report_async_v1")),
+            METHOD_FLUSH_REPORT_SYNC_V1 => {
+                let request = flush_request(payload.as_slice(), "service.flush_report_sync_v1");
+                let result = rt.flush_report(&request.reason);
+                if let Some(request_id) = request.request_id {
+                    match &result {
+                        Ok(_) => rt.mark_flush_request_completed(&request_id, None),
+                        Err(e) => rt.mark_flush_request_completed(&request_id, Some(e.clone())),
+                    }
+                }
+                result
+            },
             METHOD_SHUTDOWN_V1 => rt.flush_report("service.shutdown_v1"),
             _ => Err(format!("unknown profiler method: {method}")),
         };
@@ -63,3 +76,31 @@ impl EventSinkV1 for ProfilerEventSink {
     }
 }
 
+
+
+struct FlushServiceRequest {
+    reason: String,
+    request_id: Option<String>,
+}
+
+fn flush_reason(payload: &[u8], fallback: &str) -> String {
+    flush_request(payload, fallback).reason
+}
+
+fn flush_request(payload: &[u8], fallback: &str) -> FlushServiceRequest {
+    if payload.is_empty() {
+        return FlushServiceRequest { reason: fallback.to_owned(), request_id: None };
+    }
+    let parsed = serde_json::from_slice::<Value>(payload).ok();
+    let reason = parsed
+        .as_ref()
+        .and_then(|value| value.get("reason").and_then(Value::as_str).map(str::to_owned))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_owned());
+    let request_id = parsed
+        .as_ref()
+        .and_then(|value| value.get("request_id").and_then(Value::as_str).map(str::trim))
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    FlushServiceRequest { reason, request_id }
+}

@@ -116,6 +116,22 @@ pub(crate) struct CategoryStats {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct FlushRequestRecord {
+    pub(crate) request_id: String,
+    pub(crate) job_id: String,
+    pub(crate) reason: String,
+    pub(crate) scheduling_mode: String,
+    pub(crate) status: String,
+    pub(crate) requested_unix_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) completed_unix_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) engine_jobs_response: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct ReportPaths {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) archive: Option<String>,
@@ -139,7 +155,7 @@ pub(crate) struct ReportPaths {
     pub(crate) csv_timestamped: Option<BTreeMap<String, String>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ProfilerState {
     pub(crate) run_started: Instant,
     pub(crate) run_started_unix_ms: u128,
@@ -150,8 +166,12 @@ pub(crate) struct ProfilerState {
     pub(crate) completed: VecDeque<JobRecord>,
     pub(crate) diagnostics: VecDeque<ProfilerDiagnostic>,
     pub(crate) reports_written: u64,
+    pub(crate) reports_in_progress: u64,
+    pub(crate) reports_scheduled: u64,
+    pub(crate) reports_failed: u64,
     pub(crate) shutdown_report_written: bool,
     pub(crate) last_report_paths: Option<ReportPaths>,
+    pub(crate) flush_requests: VecDeque<FlushRequestRecord>,
 }
 
 impl ProfilerState {
@@ -166,8 +186,12 @@ impl ProfilerState {
             completed: VecDeque::new(),
             diagnostics: VecDeque::new(),
             reports_written: 0,
+            reports_in_progress: 0,
+            reports_scheduled: 0,
+            reports_failed: 0,
             shutdown_report_written: false,
             last_report_paths: None,
+            flush_requests: VecDeque::new(),
         }
     }
 

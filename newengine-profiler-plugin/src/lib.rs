@@ -8,6 +8,7 @@ mod plugin;
 mod records;
 mod report;
 mod runtime;
+mod scheduler;
 mod service;
 mod util;
 

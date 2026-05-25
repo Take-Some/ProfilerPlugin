@@ -37,6 +37,15 @@
     "latest_offenders_csv": "profiler_top_offenders_latest.csv",
     "latest_active_csv": "profiler_active_jobs_latest.csv",
     "latest_diagnostics_csv": "profiler_diagnostics_latest.csv",
-    "latest_timeline_csv": "profiler_timeline_latest.csv"
+    "latest_timeline_csv": "profiler_timeline_latest.csv",
+    "latest_methods_csv": "profiler_methods_latest.csv",
+    "latest_budget_violations_csv": "profiler_budget_violations_latest.csv"
+  },
+  "scheduling": {
+    "prefer_engine_jobs": true,
+    "require_engine_jobs": true,
+    "flush_job_budget_ms": 250.0,
+    "service_flush_mode": "engine_jobs",
+    "shutdown_flush_mode": "sync_final"
   }
 }

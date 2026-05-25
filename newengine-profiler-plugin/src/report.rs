@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::archive::{write_stored_zip, ZipFileEntry};
 use crate::constants::{ENGINE_PROFILER_GATEWAY_ID, PROFILER_PLUGIN_ID, PROFILER_PLUGIN_NAME, PROFILER_SERVICE_ID};
@@ -42,22 +43,9 @@ struct CsvArtifact {
 impl ProfilerRuntime {
     pub(crate) fn flush_report(&self, reason: &str) -> Result<Value, String> {
         let shutdown_report = is_shutdown_report_reason(reason);
-        {
-            let state = self.lock_state();
-            if shutdown_report && state.shutdown_report_written {
-                return Ok(json!({
-                    "schema": "newengine.profiler.flush_report.result.v1",
-                    "reason": reason,
-                    "paths": state.last_report_paths.clone(),
-                    "json_bytes": 0,
-                    "markdown_bytes": 0,
-                    "csv_bytes": 0,
-                    "skipped_duplicate_shutdown_report": true,
-                }));
-            }
-        }
+        let flush_started = Instant::now();
 
-        let (report, markdown, csv_bytes, paths) = {
+        let snapshot = {
             let mut state = self.lock_state();
             if shutdown_report && state.shutdown_report_written {
                 return Ok(json!({
@@ -68,36 +56,78 @@ impl ProfilerRuntime {
                     "markdown_bytes": 0,
                     "csv_bytes": 0,
                     "skipped_duplicate_shutdown_report": true,
+                    "lock_policy": "snapshot_only",
                 }));
             }
-            let report = self.build_report_locked(&state, reason);
-            let markdown = self.build_markdown_report(&report);
-            let (paths, csv_bytes) = self.write_report_files(&report, &markdown)?;
-            state.reports_written = state.reports_written.saturating_add(1);
-            if shutdown_report {
-                state.shutdown_report_written = true;
-            }
-            state.last_report_paths = Some(paths);
-            (report, markdown, csv_bytes, state.last_report_paths.as_ref().cloned())
+            state.reports_in_progress = state.reports_in_progress.saturating_add(1);
+            state.clone()
         };
 
-        Ok(json!({
-            "schema": "newengine.profiler.flush_report.result.v1",
-            "reason": reason,
-            "paths": paths,
-            "json_bytes": serde_json::to_vec(&report).map(|v| v.len()).unwrap_or(0),
-            "markdown_bytes": markdown.len(),
-            "csv_bytes": csv_bytes,
-            "skipped_duplicate_shutdown_report": false,
-        }))
+        let report = self.build_report_from_state(&snapshot, reason);
+        let markdown = self.build_markdown_report(&report);
+        let json_len = serde_json::to_vec(&report).map(|v| v.len()).unwrap_or(0);
+        let markdown_len = markdown.len();
+        let write_result = self.write_report_files(&report, &markdown);
+        let flush_elapsed_ms = duration_ms(flush_started.elapsed());
+
+        match write_result {
+            Ok((paths, csv_bytes)) => {
+                let mut state = self.lock_state();
+                state.reports_in_progress = state.reports_in_progress.saturating_sub(1);
+                state.reports_written = state.reports_written.saturating_add(1);
+                if shutdown_report {
+                    state.shutdown_report_written = true;
+                }
+                state.last_report_paths = Some(paths.clone());
+                Self::push_diag_locked(
+                    &self.cfg,
+                    &mut state,
+                    "info",
+                    "profiler_report_flushed",
+                    format!(
+                        "profiler report flushed reason='{}' elapsed_ms={:.3} policy='snapshot_then_write_outside_lock'",
+                        reason, flush_elapsed_ms,
+                    ),
+                    None,
+                );
+                Ok(json!({
+                    "schema": "newengine.profiler.flush_report.result.v1",
+                    "reason": reason,
+                    "paths": paths,
+                    "json_bytes": json_len,
+                    "markdown_bytes": markdown_len,
+                    "csv_bytes": csv_bytes,
+                    "flush_elapsed_ms": flush_elapsed_ms,
+                    "skipped_duplicate_shutdown_report": false,
+                    "lock_policy": "snapshot_then_build_and_write_outside_lock",
+                }))
+            }
+            Err(e) => {
+                let mut state = self.lock_state();
+                state.reports_in_progress = state.reports_in_progress.saturating_sub(1);
+                state.reports_failed = state.reports_failed.saturating_add(1);
+                Self::push_diag_locked(
+                    &self.cfg,
+                    &mut state,
+                    "error",
+                    "profiler_report_flush_failed",
+                    format!("profiler report flush failed reason='{}' elapsed_ms={:.3}: {}", reason, flush_elapsed_ms, e),
+                    None,
+                );
+                Err(e)
+            }
+        }
     }
 
-    fn build_report_locked(&self, state: &ProfilerState, reason: &str) -> Value {
+    fn build_report_from_state(&self, state: &ProfilerState, reason: &str) -> Value {
         let mut by_category: BTreeMap<String, CategoryStats> = BTreeMap::new();
         let mut by_status: BTreeMap<String, u64> = BTreeMap::new();
         let mut by_source: BTreeMap<String, AggregateStats> = BTreeMap::new();
         let mut by_owner: BTreeMap<String, AggregateStats> = BTreeMap::new();
         let mut by_offender: BTreeMap<String, AggregateStats> = BTreeMap::new();
+        let mut by_method: BTreeMap<String, AggregateStats> = BTreeMap::new();
+        let mut elapsed_values = Vec::new();
+        let mut load_values = Vec::new();
         let mut failed = 0u64;
         let mut slow = 0u64;
         let mut over_budget = 0u64;
@@ -115,6 +145,8 @@ impl ProfilerRuntime {
 
             total_elapsed_ms += elapsed;
             max_elapsed_ms = max_elapsed_ms.max(elapsed);
+            elapsed_values.push(elapsed);
+            load_values.push(load);
             total_payload_bytes = total_payload_bytes.saturating_add(job.payload_bytes.unwrap_or_default());
             total_output_bytes = total_output_bytes.saturating_add(job.output_bytes.unwrap_or_default());
             *by_status.entry(job.status.clone()).or_insert(0) += 1;
@@ -175,6 +207,20 @@ impl ProfilerRuntime {
                 is_failed,
                 is_slow,
             );
+
+            let method = job_method_key(job);
+            accumulate(
+                by_method.entry(method.clone()).or_insert_with(|| AggregateStats {
+                    key: method,
+                    category: job.category.clone(),
+                    source: job.source.clone(),
+                    sample_name: job.name.clone(),
+                    ..AggregateStats::default()
+                }),
+                job,
+                is_failed,
+                is_slow,
+            );
         }
 
         let active_jobs: Vec<Value> = state
@@ -215,12 +261,17 @@ impl ProfilerRuntime {
         finalize_aggregates(&mut by_source, total_elapsed_ms);
         finalize_aggregates(&mut by_owner, total_elapsed_ms);
         finalize_aggregates(&mut by_offender, total_elapsed_ms);
+        finalize_aggregates(&mut by_method, total_elapsed_ms);
 
         let source_ranked = ranked_aggregates(by_source, JSON_TOP_LIMIT);
         let owner_ranked = ranked_aggregates(by_owner, JSON_TOP_LIMIT);
         let offender_ranked = ranked_aggregates(by_offender, JSON_TOP_LIMIT);
+        let method_ranked = ranked_aggregates(by_method, JSON_TOP_LIMIT);
         let top_elapsed_jobs = ranked_jobs_by(&state.completed, "elapsed", JSON_TOP_LIMIT);
         let top_load_jobs = ranked_jobs_by(&state.completed, "load", JSON_TOP_LIMIT);
+        let budget_violations = ranked_budget_violations(&state.completed, self.cfg.diagnostics.slow_job_warn_ms, JSON_TOP_LIMIT);
+        let elapsed_percentiles = percentiles_json(elapsed_values);
+        let load_percentiles = percentiles_json(load_values);
 
         json!({
             "schema": "newengine.profiler.report.v2",
@@ -250,6 +301,12 @@ impl ProfilerRuntime {
                 "max_elapsed_ms": max_elapsed_ms,
                 "total_payload_bytes": total_payload_bytes,
                 "total_output_bytes": total_output_bytes,
+                "elapsed_percentiles_ms": elapsed_percentiles,
+                "load_percentiles": load_percentiles,
+                "reports_written": state.reports_written,
+                "reports_in_progress": state.reports_in_progress,
+                "reports_scheduled": state.reports_scheduled,
+                "reports_failed": state.reports_failed,
                 "by_status": by_status,
                 "by_category": by_category,
             },
@@ -261,6 +318,8 @@ impl ProfilerRuntime {
                     "top_completed_jobs_by_load",
                     "by_category_ranked",
                     "by_source_ranked",
+                    "by_method_ranked",
+                    "budget_violations",
                     "active_jobs"
                 ],
                 "interpretation": "elapsed_ms is observed wall-clock time captured by profiler events; load = elapsed_ms / budget_ms. It identifies CPU-time suspects inside instrumented engine/plugin work, not OS-level sampled CPU cycles.",
@@ -268,13 +327,24 @@ impl ProfilerRuntime {
                 "by_category_ranked": category_ranked,
                 "by_source_ranked": source_ranked,
                 "by_owner_ranked": owner_ranked,
+                "by_method_ranked": method_ranked,
                 "top_offenders_by_total_elapsed": offender_ranked,
                 "top_completed_jobs_by_elapsed": top_elapsed_jobs,
                 "top_completed_jobs_by_load": top_load_jobs,
+                "budget_violations": budget_violations,
             },
             "active_jobs": active_jobs,
             "completed_jobs": completed_jobs,
             "diagnostics": diagnostics,
+            "flush_requests": state.flush_requests.iter().collect::<Vec<_>>(),
+            "scheduler": {
+                "service_flush_mode": self.cfg.scheduling.service_flush_mode.clone(),
+                "shutdown_flush_mode": self.cfg.scheduling.shutdown_flush_mode.clone(),
+                "prefer_engine_jobs": self.cfg.scheduling.prefer_engine_jobs,
+                "require_engine_jobs": self.cfg.scheduling.require_engine_jobs,
+                "lock_policy": "snapshot_then_build_and_write_outside_lock",
+                "hidden_load_policy": "engine.jobs required for async flush; profiler-owned background fallback is not allowed"
+            },
             "config": self.cfg.clone(),
         })
     }
@@ -350,6 +420,43 @@ impl ProfilerRuntime {
         }
         let _ = writeln!(out);
 
+        let _ = writeln!(out, "## Flush and scheduling policy");
+        let _ = writeln!(out);
+        let scheduler = report.get("scheduler").unwrap_or(&Value::Null);
+        let _ = writeln!(out, "| Setting | Value |");
+        let _ = writeln!(out, "|---|---|");
+        let _ = writeln!(out, "| `service_flush_mode` | `{}` |", scheduler.get("service_flush_mode").and_then(Value::as_str).unwrap_or("unknown"));
+        let _ = writeln!(out, "| `shutdown_flush_mode` | `{}` |", scheduler.get("shutdown_flush_mode").and_then(Value::as_str).unwrap_or("unknown"));
+        let _ = writeln!(out, "| `prefer_engine_jobs` | `{}` |", scheduler.get("prefer_engine_jobs").and_then(Value::as_bool).unwrap_or(false));
+        let _ = writeln!(out, "| `require_engine_jobs` | `{}` |", scheduler.get("require_engine_jobs").and_then(Value::as_bool).unwrap_or(false));
+        let _ = writeln!(out, "| `lock_policy` | `{}` |", scheduler.get("lock_policy").and_then(Value::as_str).unwrap_or("snapshot_then_build_and_write_outside_lock"));
+        let _ = writeln!(out);
+        let _ = writeln!(out, "> [!NOTE] REQUEST NOTE — profiler safety");
+        let _ = writeln!(out, "> **У нас сейчас:** heavy report build/write is outside the runtime state lock; async flush is routed through `engine.jobs` by default.");
+        let _ = writeln!(out, "> **Было бы здорово:** keep every future heavy profiler export as a visible job/task, never as an invisible background load.");
+        let _ = writeln!(out, "> **Technical details (EN):** `profiler.flush_report_v1` uses configured service flush mode; `profiler.flush_report_sync_v1` is the explicit synchronous worker entrypoint for `engine.jobs` and shutdown-final flush.");
+        let _ = writeln!(out);
+
+        let elapsed_p = summary.get("elapsed_percentiles_ms").unwrap_or(&Value::Null);
+        let load_p = summary.get("load_percentiles").unwrap_or(&Value::Null);
+        let _ = writeln!(out, "## Percentiles — latency and budget load");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "| Metric | p50 | p90 | p95 | p99 |");
+        let _ = writeln!(out, "|---|---:|---:|---:|---:|");
+        let _ = writeln!(out, "| `elapsed_ms` | {:.3} | {:.3} | {:.3} | {:.3} |",
+            elapsed_p.get("p50").and_then(Value::as_f64).unwrap_or(0.0),
+            elapsed_p.get("p90").and_then(Value::as_f64).unwrap_or(0.0),
+            elapsed_p.get("p95").and_then(Value::as_f64).unwrap_or(0.0),
+            elapsed_p.get("p99").and_then(Value::as_f64).unwrap_or(0.0),
+        );
+        let _ = writeln!(out, "| `load` | {:.2}x | {:.2}x | {:.2}x | {:.2}x |",
+            load_p.get("p50").and_then(Value::as_f64).unwrap_or(0.0),
+            load_p.get("p90").and_then(Value::as_f64).unwrap_or(0.0),
+            load_p.get("p95").and_then(Value::as_f64).unwrap_or(0.0),
+            load_p.get("p99").and_then(Value::as_f64).unwrap_or(0.0),
+        );
+        let _ = writeln!(out);
+
         write_ranked_chart(
             &mut out,
             "## Load chart — категории по суммарному времени",
@@ -386,6 +493,42 @@ impl ProfilerRuntime {
                     item.get("slow").and_then(Value::as_u64).unwrap_or(0),
                     item.get("failed").and_then(Value::as_u64).unwrap_or(0),
                 );
+            }
+        }
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "## Top methods by total elapsed time");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "| Rank | Method | Source | Category | Calls | Total ms | Share | Avg ms | Max ms | Max load | Slow | Failed |");
+        let _ = writeln!(out, "|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
+        if let Some(items) = analysis.get("by_method_ranked").and_then(Value::as_array) {
+            for (idx, item) in items.iter().take(MD_TOP_LIMIT).enumerate() {
+                let _ = writeln!(out,
+                    "| {} | `{}` | `{}` | `{}` | {} | {:.3} | {:.1}% | {:.3} | {:.3} | {:.2}x | {} | {} |",
+                    idx + 1,
+                    escape_md(item.get("key").and_then(Value::as_str).unwrap_or("-")),
+                    escape_md(item.get("source").and_then(Value::as_str).unwrap_or("-")),
+                    escape_md(item.get("category").and_then(Value::as_str).unwrap_or("-")),
+                    item.get("count").and_then(Value::as_u64).unwrap_or(0),
+                    item.get("total_elapsed_ms").and_then(Value::as_f64).unwrap_or(0.0),
+                    item.get("total_share_percent").and_then(Value::as_f64).unwrap_or(0.0),
+                    item.get("average_elapsed_ms").and_then(Value::as_f64).unwrap_or(0.0),
+                    item.get("max_elapsed_ms").and_then(Value::as_f64).unwrap_or(0.0),
+                    item.get("max_load").and_then(Value::as_f64).unwrap_or(0.0),
+                    item.get("slow").and_then(Value::as_u64).unwrap_or(0),
+                    item.get("failed").and_then(Value::as_u64).unwrap_or(0),
+                );
+            }
+        }
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "## Budget violations — что пробило кадр/лимит");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "| Rank | Status | Category | Source | Name | Elapsed ms | Budget ms | Load | Detail |");
+        let _ = writeln!(out, "|---:|---|---|---|---|---:|---:|---:|---|");
+        if let Some(jobs) = analysis.get("budget_violations").and_then(Value::as_array) {
+            for (idx, job) in jobs.iter().take(MD_TOP_LIMIT).enumerate() {
+                write_job_row(&mut out, idx + 1, job);
             }
         }
         let _ = writeln!(out);
@@ -494,6 +637,8 @@ impl ProfilerRuntime {
         let _ = writeln!(out, "| `profiler_sources_latest.csv` | source totals and share-of-time |");
         let _ = writeln!(out, "| `profiler_active_jobs_latest.csv` | jobs still running at flush time with current load |");
         let _ = writeln!(out, "| `profiler_timeline_latest.csv` | completed jobs with run-relative start/end offsets |");
+        let _ = writeln!(out, "| `profiler_methods_latest.csv` | method/service grouped timing totals |");
+        let _ = writeln!(out, "| `profiler_budget_violations_latest.csv` | jobs where `load >= 1.0` or slow threshold was crossed |");
         let _ = writeln!(out, "| `profiler_diagnostics_latest.csv` | warnings/errors emitted by profiler analysis |");
         let _ = writeln!(out);
 
@@ -705,6 +850,8 @@ impl ProfilerRuntime {
             ("active_jobs", self.cfg.report.latest_active_csv.clone(), format!("profiler_active_jobs_{created_utc}.csv"), csv_active_jobs(report)),
             ("diagnostics", self.cfg.report.latest_diagnostics_csv.clone(), format!("profiler_diagnostics_{created_utc}.csv"), csv_diagnostics(report)),
             ("timeline", self.cfg.report.latest_timeline_csv.clone(), format!("profiler_timeline_{created_utc}.csv"), csv_timeline(report)),
+            ("methods", self.cfg.report.latest_methods_csv.clone(), format!("profiler_methods_{created_utc}.csv"), csv_methods(report)),
+            ("budget_violations", self.cfg.report.latest_budget_violations_csv.clone(), format!("profiler_budget_violations_{created_utc}.csv"), csv_budget_violations(report)),
         ];
 
         let mut artifacts = Vec::with_capacity(specs.len());
@@ -771,6 +918,44 @@ fn ranked_jobs_by(jobs: &std::collections::VecDeque<JobRecord>, by: &str, limit:
         .collect()
 }
 
+
+fn ranked_budget_violations(jobs: &std::collections::VecDeque<JobRecord>, slow_job_warn_ms: f64, limit: usize) -> Vec<Value> {
+    let mut values = jobs
+        .iter()
+        .filter(|job| job.load.unwrap_or_default() >= 1.0 || job.elapsed_ms.unwrap_or_default() >= slow_job_warn_ms)
+        .collect::<Vec<_>>();
+    values.sort_by(|a, b| {
+        cmp_f64_desc(a.load.unwrap_or_default(), b.load.unwrap_or_default())
+            .then_with(|| cmp_f64_desc(a.elapsed_ms.unwrap_or_default(), b.elapsed_ms.unwrap_or_default()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    values
+        .into_iter()
+        .take(limit)
+        .map(|job| serde_json::to_value(job).unwrap_or(Value::Null))
+        .collect()
+}
+
+fn percentiles_json(mut values: Vec<f64>) -> Value {
+    values.retain(|value| value.is_finite());
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    json!({
+        "p50": percentile_sorted(&values, 0.50),
+        "p90": percentile_sorted(&values, 0.90),
+        "p95": percentile_sorted(&values, 0.95),
+        "p99": percentile_sorted(&values, 0.99),
+    })
+}
+
+fn percentile_sorted(values: &[f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let last = values.len().saturating_sub(1);
+    let idx = ((last as f64) * q.clamp(0.0, 1.0)).round() as usize;
+    values[idx.min(last)]
+}
+
 fn sort_objects_desc(values: &mut [Value], key: &str) {
     values.sort_by(|a, b| {
         let av = a.get(key).and_then(Value::as_f64).unwrap_or(0.0);
@@ -794,6 +979,13 @@ fn job_owner_key(job: &JobRecord) -> String {
         .or_else(|| first_metadata_str(&job.metadata, &["/gateway", "/engine_gateway", "/metadata/gateway", "/metadata/engine_gateway"])
             .map(|v| format!("gateway:{v}")))
         .unwrap_or_else(|| format!("{}:{}", job.source, job.category))
+}
+
+
+fn job_method_key(job: &JobRecord) -> String {
+    first_metadata_str(&job.metadata, &["/method", "/method_name", "/metadata/method", "/metadata/method_name"])
+        .map(|method| format!("{}::{method}", job_owner_key(job)))
+        .unwrap_or_else(|| format!("{}::<no-method>", job_owner_key(job)))
 }
 
 fn job_offender_key(job: &JobRecord) -> String {
@@ -911,6 +1103,30 @@ fn csv_source_summary(report: &Value) -> String {
 
 fn csv_top_offenders(report: &Value) -> String {
     csv_aggregate(report.pointer("/analysis/top_offenders_by_total_elapsed").and_then(Value::as_array))
+}
+
+fn csv_methods(report: &Value) -> String {
+    csv_aggregate(report.pointer("/analysis/by_method_ranked").and_then(Value::as_array))
+}
+
+fn csv_budget_violations(report: &Value) -> String {
+    let mut out = csv_header(&["rank", "id", "status", "category", "source", "name", "elapsed_ms", "budget_ms", "load", "load_percent", "started_unix_ms", "ended_unix_ms", "service_id", "method", "plugin_id", "gateway", "error", "detail"]);
+    if let Some(jobs) = report.pointer("/analysis/budget_violations").and_then(Value::as_array) {
+        for (idx, job) in jobs.iter().enumerate() {
+            let load = f(job, "load");
+            csv_push(&mut out, &[
+                rank(idx), s(job, "id"), s(job, "status"), s(job, "category"), s(job, "source"), s(job, "name"),
+                f(job, "elapsed_ms"), f(job, "budget_ms"), load.clone(), format!("{:.3}", load.parse::<f64>().unwrap_or(0.0) * 100.0),
+                scalar(job.get("started_unix_ms")), scalar(job.get("ended_unix_ms")),
+                metadata_csv(job, &["/metadata/service_id", "/metadata/metadata/service_id"]),
+                metadata_csv(job, &["/metadata/method", "/metadata/method_name", "/metadata/metadata/method"]),
+                metadata_csv(job, &["/metadata/plugin_id", "/metadata/metadata/plugin_id"]),
+                metadata_csv(job, &["/metadata/gateway", "/metadata/engine_gateway", "/metadata/metadata/gateway"]),
+                s(job, "error"), s(job, "detail"),
+            ]);
+        }
+    }
+    out
 }
 
 fn csv_aggregate(rows: Option<&Vec<Value>>) -> String {

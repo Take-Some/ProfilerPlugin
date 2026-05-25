@@ -11,9 +11,14 @@
     "profiler.snapshot_json_v1",
     "profiler.diagnostics_json_v1",
     "profiler.flush_report_v1",
+    "profiler.flush_report_async_v1",
+    "profiler.flush_report_sync_v1",
+    "profiler.flush_status_json_v1",
     "shutdown_v1"
   ],
   "event_topics": [
+    "engine.task.event.v1",
+    "engine.jobs.event.v1",
     "newengine.diagnostics.job.begin.v1",
     "newengine.diagnostics.job.end.v1",
     "newengine.diagnostics.job.status.v1",
@@ -30,7 +35,9 @@
     "sources": "cache/profiler/profiler_sources_latest.csv",
     "active_jobs": "cache/profiler/profiler_active_jobs_latest.csv",
     "timeline": "cache/profiler/profiler_timeline_latest.csv",
-    "diagnostics": "cache/profiler/profiler_diagnostics_latest.csv"
+    "diagnostics": "cache/profiler/profiler_diagnostics_latest.csv",
+    "methods": "cache/profiler/profiler_methods_latest.csv",
+    "budget_violations": "cache/profiler/profiler_budget_violations_latest.csv"
   },
   "report_archive_contains": [
     "manifest.json",
@@ -38,5 +45,12 @@
     "timestamped markdown",
     "timestamped csv files",
     "latest compatibility copies"
-  ]
+  ],
+  "scheduler": {
+    "gateway": "engine.jobs",
+    "method": "job.invoke_service_v1",
+    "default_service_flush_mode": "engine_jobs",
+    "worker_entrypoint": "profiler.flush_report_sync_v1",
+    "hidden_thread_fallback": false
+  }
 }
