@@ -1,5 +1,5 @@
 [package]
-name = "newengine-profiler"
+name = "StarProfiler"
 version = "0.1.2"
 edition = "2021"
 description = "NewEngine profiling and diagnostics runtime plugin"
