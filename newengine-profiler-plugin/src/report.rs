@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+use crate::archive::{write_stored_zip, ZipFileEntry};
 use crate::constants::{ENGINE_PROFILER_GATEWAY_ID, PROFILER_PLUGIN_ID, PROFILER_PLUGIN_NAME, PROFILER_SERVICE_ID};
 use crate::records::{CategoryStats, JobRecord, ProfilerDiagnostic, ProfilerState, ReportPaths};
 use crate::runtime::ProfilerRuntime;
-use crate::util::{duration_ms, escape_md, format_json_scalar, path_to_string, unix_ms, write_file};
+use crate::util::{duration_ms, escape_md, format_json_scalar, path_to_string, unix_ms, utc_stamp_from_unix_ms, write_file};
 
 impl ProfilerRuntime {
     pub(crate) fn flush_report(&self, reason: &str) -> Result<Value, String> {
@@ -130,7 +131,7 @@ impl ProfilerRuntime {
         let summary = report.get("summary").unwrap_or(&Value::Null);
         let run = report.get("run").unwrap_or(&Value::Null);
 
-        let _ = writeln!(out, "# NewEngine Profiler Report");
+        let _ = writeln!(out, "# North Star Engine Profiler Report");
         let _ = writeln!(out);
         let _ = writeln!(out, "- reason: `{}`", report.get("reason").and_then(Value::as_str).unwrap_or("unknown"));
         let _ = writeln!(out, "- uptime_ms: `{:.3}`", run.get("uptime_ms").and_then(Value::as_f64).unwrap_or(0.0));
@@ -219,38 +220,152 @@ impl ProfilerRuntime {
         let dir = PathBuf::from(&self.cfg.report.directory);
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("create report directory '{}' failed: {e}", dir.display()))?;
-        let stamp = unix_ms();
+        let created_unix_ms = unix_ms();
+        let created_utc = utc_stamp_from_unix_ms(created_unix_ms);
+        let archive_prefix = safe_archive_prefix(&self.cfg.report.archive_prefix);
+        let archive_name = format!("{archive_prefix}_{created_utc}.zip");
+        let archive_path = dir.join(&archive_name);
+        let json_entry_name = format!("profiler_report_{created_utc}.json");
+        let markdown_entry_name = format!("profiler_report_{created_utc}.md");
+        let manifest_entry_name = "manifest.json".to_owned();
 
         let mut paths = ReportPaths {
+            archive: None,
+            archive_created_unix_ms: None,
+            archive_created_utc: None,
+            archive_manifest: None,
             json_latest: None,
             json_timestamped: None,
             markdown_latest: None,
             markdown_timestamped: None,
         };
 
-        if self.cfg.report.write_json {
-            let latest = dir.join(&self.cfg.report.latest_json);
-            let stamped = dir.join(format!("profiler_report_{stamp}.json"));
+        let json_bytes = if self.cfg.report.write_json {
             let bytes = serde_json::to_vec_pretty(report).map_err(|e| e.to_string())?;
+            let latest = dir.join(&self.cfg.report.latest_json);
             write_file(&latest, &bytes)?;
-            write_file(&stamped, &bytes)?;
             paths.json_latest = Some(path_to_string(&latest));
-            paths.json_timestamped = Some(path_to_string(&stamped));
-        }
+            Some(bytes)
+        } else {
+            None
+        };
 
-        if self.cfg.report.write_markdown {
+        let markdown_bytes = if self.cfg.report.write_markdown {
             let latest = dir.join(&self.cfg.report.latest_markdown);
-            let stamped = dir.join(format!("profiler_report_{stamp}.md"));
             write_file(&latest, markdown.as_bytes())?;
-            write_file(&stamped, markdown.as_bytes())?;
             paths.markdown_latest = Some(path_to_string(&latest));
-            paths.markdown_timestamped = Some(path_to_string(&stamped));
+            Some(markdown.as_bytes().to_vec())
+        } else {
+            None
+        };
+
+        if self.cfg.report.write_archive {
+            let archive_path_string = path_to_string(&archive_path);
+            if json_bytes.is_some() {
+                paths.json_timestamped = Some(format!("{archive_path_string}#{json_entry_name}"));
+            }
+            if markdown_bytes.is_some() {
+                paths.markdown_timestamped = Some(format!("{archive_path_string}#{markdown_entry_name}"));
+            }
+            paths.archive = Some(archive_path_string.clone());
+            paths.archive_created_unix_ms = Some(created_unix_ms);
+            paths.archive_created_utc = Some(created_utc.clone());
+            paths.archive_manifest = Some(format!("{archive_path_string}#{manifest_entry_name}"));
+
+            let manifest = self.build_report_archive_manifest(
+                report,
+                &paths,
+                &created_utc,
+                created_unix_ms,
+                json_bytes.as_ref().map(|_| json_entry_name.as_str()),
+                markdown_bytes.as_ref().map(|_| markdown_entry_name.as_str()),
+            );
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
+
+            let mut entries = Vec::new();
+            entries.push(ZipFileEntry { name: manifest_entry_name, bytes: &manifest_bytes });
+            if let Some(bytes) = json_bytes.as_ref() {
+                entries.push(ZipFileEntry { name: json_entry_name.clone(), bytes });
+                if self.cfg.report.include_latest_in_archive {
+                    entries.push(ZipFileEntry { name: self.cfg.report.latest_json.clone(), bytes });
+                }
+            }
+            if let Some(bytes) = markdown_bytes.as_ref() {
+                entries.push(ZipFileEntry { name: markdown_entry_name.clone(), bytes });
+                if self.cfg.report.include_latest_in_archive {
+                    entries.push(ZipFileEntry { name: self.cfg.report.latest_markdown.clone(), bytes });
+                }
+            }
+            write_stored_zip(&archive_path, created_unix_ms, &entries)?;
+        } else {
+            if let Some(bytes) = json_bytes.as_ref() {
+                let stamped = dir.join(&json_entry_name);
+                write_file(&stamped, bytes)?;
+                paths.json_timestamped = Some(path_to_string(&stamped));
+            }
+            if let Some(bytes) = markdown_bytes.as_ref() {
+                let stamped = dir.join(&markdown_entry_name);
+                write_file(&stamped, bytes)?;
+                paths.markdown_timestamped = Some(path_to_string(&stamped));
+            }
         }
 
         Ok(paths)
     }
 
+    fn build_report_archive_manifest(
+        &self,
+        report: &Value,
+        paths: &ReportPaths,
+        created_utc: &str,
+        created_unix_ms: u128,
+        json_entry_name: Option<&str>,
+        markdown_entry_name: Option<&str>,
+    ) -> Value {
+        json!({
+            "schema": "newengine.profiler.report_archive.manifest.v1",
+            "created_utc": created_utc,
+            "created_unix_ms": created_unix_ms,
+            "reason": report.get("reason").cloned().unwrap_or(Value::Null),
+            "archive": paths.archive.clone(),
+            "latest": {
+                "json": paths.json_latest.clone(),
+                "markdown": paths.markdown_latest.clone(),
+            },
+            "entries": {
+                "json": json_entry_name,
+                "markdown": markdown_entry_name,
+                "manifest": "manifest.json",
+            },
+            "policy": {
+                "timestamped_files_are_archive_members": self.cfg.report.write_archive,
+                "latest_files_are_written_for_compatibility": true,
+                "latest_files_are_duplicated_in_archive": self.cfg.report.include_latest_in_archive,
+            },
+        })
+    }
 
+
+}
+
+fn safe_archive_prefix(value: &str) -> String {
+    let sanitized: String = value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let sanitized = sanitized.trim_matches('.').trim_matches('_').to_owned();
+    if sanitized.is_empty() {
+        "profiler_report".to_owned()
+    } else {
+        sanitized
+    }
 }
 
 fn is_shutdown_report_reason(reason: &str) -> bool {

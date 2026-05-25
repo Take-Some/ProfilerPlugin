@@ -18,5 +18,7 @@
     "newengine.diagnostics.job.end.v1",
     "newengine.diagnostics.job.status.v1"
   ],
-  "report": "cache/profiler/profiler_report_latest.json"
+  "report": "cache/profiler/profiler_report_latest.json",
+  "report_archive": "cache/profiler/profiler_report_<YYYYMMDD_HHMMSS_mmmZ>.zip",
+  "report_archive_manifest": "manifest.json"
 }

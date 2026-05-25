@@ -118,6 +118,14 @@ pub(crate) struct CategoryStats {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ReportPaths {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) archive: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) archive_created_unix_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) archive_created_utc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) archive_manifest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) json_latest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) json_timestamped: Option<String>,

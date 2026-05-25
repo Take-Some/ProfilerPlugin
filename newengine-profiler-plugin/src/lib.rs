@@ -1,6 +1,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![allow(non_local_definitions)]
 
+mod archive;
 mod config;
 mod constants;
 mod plugin;

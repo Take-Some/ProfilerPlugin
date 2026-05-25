@@ -64,6 +64,12 @@ pub(crate) struct ReportConfig {
     pub(crate) write_json: bool,
     #[serde(default = "default_true")]
     pub(crate) write_markdown: bool,
+    #[serde(default = "default_true")]
+    pub(crate) write_archive: bool,
+    #[serde(default = "default_true")]
+    pub(crate) include_latest_in_archive: bool,
+    #[serde(default = "default_archive_prefix")]
+    pub(crate) archive_prefix: String,
     #[serde(default = "default_report_directory")]
     pub(crate) directory: String,
     #[serde(default = "default_latest_json")]
@@ -125,6 +131,9 @@ impl Default for ReportConfig {
             write_on_shutdown: true,
             write_json: true,
             write_markdown: true,
+            write_archive: true,
+            include_latest_in_archive: true,
+            archive_prefix: default_archive_prefix(),
             directory: default_report_directory(),
             latest_json: default_latest_json(),
             latest_markdown: default_latest_markdown(),
@@ -141,6 +150,7 @@ fn default_stale_active_job_ms() -> f64 { 1000.0 }
 fn default_max_recent_jobs() -> usize { 4096 }
 fn default_max_recent_diagnostics() -> usize { 1024 }
 fn default_max_payload_preview_bytes() -> usize { 2048 }
+fn default_archive_prefix() -> String { "profiler_report".to_owned() }
 fn default_report_directory() -> String { "cache/profiler".to_owned() }
 fn default_latest_json() -> String { "profiler_report_latest.json".to_owned() }
 fn default_latest_markdown() -> String { "profiler_report_latest.md".to_owned() }

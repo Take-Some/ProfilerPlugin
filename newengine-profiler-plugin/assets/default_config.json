@@ -26,6 +26,9 @@
     "write_markdown": true,
     "directory": "cache/profiler",
     "latest_json": "profiler_report_latest.json",
-    "latest_markdown": "profiler_report_latest.md"
+    "latest_markdown": "profiler_report_latest.md",
+    "write_archive": true,
+    "include_latest_in_archive": true,
+    "archive_prefix": "profiler_report"
   }
 }
