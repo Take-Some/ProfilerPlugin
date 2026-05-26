@@ -6,7 +6,6 @@ pub(crate) const PROFILER_BACKEND_CAPABILITY_ID: &str = "profiler.backend";
 
 pub(crate) const ENGINE_JOBS_GATEWAY_ID: &str = "engine.jobs";
 pub(crate) const JOBS_INVOKE_SERVICE_V1: &str = "job.invoke_service_v1";
-pub(crate) const JOBS_PROGRESS_EVENT_V1: &str = "job.progress_event_v1";
 
 pub(crate) const METHOD_INFO_JSON: &str = "info_json";
 pub(crate) const METHOD_JOB_BEGIN_JSON_V1: &str = "profiler.job_begin_json_v1";

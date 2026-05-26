@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![allow(non_local_definitions)]
 

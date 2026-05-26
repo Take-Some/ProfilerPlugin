@@ -4,7 +4,7 @@ use abi_stable::StableAbi;
 use newengine_plugin_api::{
     BackendRouteDescriptor, BackendServiceSpec, CapabilityDesc, CapabilityKind, CapabilityRole,
     ConfigApplyResultV1, ConfigBlobV1, ConfigDiagLevelV1, ConfigDiagV1, ConfigPatchV1,
-    EventSinkV1Dyn, EventSinkV1_TO, HostApiV1, PluginDescriptor, PluginInfo, PluginKind,
+    EventSinkV1Dyn, EventSinkV1_TO, HostApiV1, PluginDescriptor, PluginKind,
     PluginModule, ServiceV1Dyn, ServiceV1_TO,
 };
 use serde_json::Value;
@@ -70,11 +70,6 @@ impl ProfilerPlugin {
             .priority(100),
         ))
         .build()
-    }
-
-    fn info_impl(&self) -> PluginInfo {
-        let d = self.descriptor_impl();
-        PluginInfo { id: d.id, name: d.name, version: d.version }
     }
 
     fn init_with_cfg(&mut self, host: HostApiV1, cfg: ProfilerConfig) -> Result<(), String> {
