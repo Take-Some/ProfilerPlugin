@@ -1,6 +1,7 @@
 pub(crate) const PROFILER_PLUGIN_ID: &str = "newengine.profiler";
-pub(crate) const PROFILER_PLUGIN_NAME: &str = "NewEngine Profiler";
+pub(crate) const PROFILER_PLUGIN_NAME: &str = "StarProfiler";
 pub(crate) const ENGINE_PROFILER_GATEWAY_ID: &str = "engine.profiler";
+pub(crate) const PROFILER_PROVIDER_GATEWAY_ID: &str = "engine.profiler.starprofiler";
 pub(crate) const PROFILER_SERVICE_ID: &str = "profiler.api";
 pub(crate) const PROFILER_BACKEND_CAPABILITY_ID: &str = "profiler.backend";
 

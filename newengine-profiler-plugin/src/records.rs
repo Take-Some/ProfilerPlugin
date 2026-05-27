@@ -25,6 +25,22 @@ pub(crate) struct JobBeginWire {
     pub(crate) payload_bytes: Option<u64>,
     #[serde(default)]
     pub(crate) metadata: Option<Value>,
+    #[serde(default)]
+    pub(crate) lane: Option<String>,
+    #[serde(default)]
+    pub(crate) priority: Option<String>,
+    #[serde(default)]
+    pub(crate) dependency_group: Option<String>,
+    #[serde(default)]
+    pub(crate) frame_id: Option<u64>,
+    #[serde(default)]
+    pub(crate) frame_budget_ms: Option<f64>,
+    #[serde(default)]
+    pub(crate) gpu_wait_ms: Option<f64>,
+    #[serde(default)]
+    pub(crate) wait_reason: Option<String>,
+    #[serde(default)]
+    pub(crate) async_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,6 +56,22 @@ pub(crate) struct JobEndWire {
     pub(crate) output_bytes: Option<u64>,
     #[serde(default)]
     pub(crate) metadata: Option<Value>,
+    #[serde(default)]
+    pub(crate) lane: Option<String>,
+    #[serde(default)]
+    pub(crate) priority: Option<String>,
+    #[serde(default)]
+    pub(crate) dependency_group: Option<String>,
+    #[serde(default)]
+    pub(crate) frame_id: Option<u64>,
+    #[serde(default)]
+    pub(crate) frame_budget_ms: Option<f64>,
+    #[serde(default)]
+    pub(crate) gpu_wait_ms: Option<f64>,
+    #[serde(default)]
+    pub(crate) wait_reason: Option<String>,
+    #[serde(default)]
+    pub(crate) async_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -61,6 +93,22 @@ pub(crate) struct JobStatusWire {
     pub(crate) budget_ms: Option<f64>,
     #[serde(default)]
     pub(crate) metadata: Option<Value>,
+    #[serde(default)]
+    pub(crate) lane: Option<String>,
+    #[serde(default)]
+    pub(crate) priority: Option<String>,
+    #[serde(default)]
+    pub(crate) dependency_group: Option<String>,
+    #[serde(default)]
+    pub(crate) frame_id: Option<u64>,
+    #[serde(default)]
+    pub(crate) frame_budget_ms: Option<f64>,
+    #[serde(default)]
+    pub(crate) gpu_wait_ms: Option<f64>,
+    #[serde(default)]
+    pub(crate) wait_reason: Option<String>,
+    #[serde(default)]
+    pub(crate) async_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,8 +127,27 @@ pub(crate) struct JobRecord {
     pub(crate) name: String,
     pub(crate) category: String,
     pub(crate) source: String,
+    pub(crate) lane: String,
+    pub(crate) priority: String,
+    pub(crate) dependency_group: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) frame_id: Option<u64>,
     pub(crate) status: String,
     pub(crate) detail: String,
+    pub(crate) scheduled: bool,
+    pub(crate) blocked: bool,
+    pub(crate) polling: bool,
+    pub(crate) waited_on_gpu: bool,
+    pub(crate) stayed_async: bool,
+    pub(crate) exceeded_frame_budget: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) frame_budget_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) gpu_wait_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) wait_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) async_mode: Option<String>,
     pub(crate) started_unix_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) ended_unix_ms: Option<u128>,

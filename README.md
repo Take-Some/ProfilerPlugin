@@ -85,6 +85,9 @@ cache/profiler/profiler_categories_latest.csv
 cache/profiler/profiler_sources_latest.csv
 cache/profiler/profiler_methods_latest.csv
 cache/profiler/profiler_budget_violations_latest.csv
+cache/profiler/profiler_lanes_latest.csv
+cache/profiler/profiler_first_latest.csv
+cache/profiler/profiler_frame_budget_latest.csv
 cache/profiler/profiler_active_jobs_latest.csv
 cache/profiler/profiler_timeline_latest.csv
 cache/profiler/profiler_diagnostics_latest.csv
@@ -103,6 +106,9 @@ profiler_categories_<YYYYMMDD_HHMMSS_mmmZ>.csv
 profiler_sources_<YYYYMMDD_HHMMSS_mmmZ>.csv
 profiler_methods_<YYYYMMDD_HHMMSS_mmmZ>.csv
 profiler_budget_violations_<YYYYMMDD_HHMMSS_mmmZ>.csv
+profiler_lanes_<YYYYMMDD_HHMMSS_mmmZ>.csv
+profiler_first_<YYYYMMDD_HHMMSS_mmmZ>.csv
+profiler_frame_budget_<YYYYMMDD_HHMMSS_mmmZ>.csv
 profiler_active_jobs_<YYYYMMDD_HHMMSS_mmmZ>.csv
 profiler_timeline_<YYYYMMDD_HHMMSS_mmmZ>.csv
 profiler_diagnostics_<YYYYMMDD_HHMMSS_mmmZ>.csv
@@ -117,14 +123,17 @@ The timestamped JSON/Markdown/CSV report files are canonical archive members. Th
 
 Start at **Quick answer — кто жрёт время**. It points to the grouped offender with the largest `total_elapsed_ms` share. Then read:
 
-1. **Load chart — категории по суммарному времени** — high-level domain split.
-2. **Load chart — top offenders** — grouped suspect chart by service/plugin/method/name.
-3. **Top offenders by total elapsed time** — best table for answering who consumed the captured processor time.
-4. **Top methods by total elapsed time** — which service method accumulated the most captured time.
-5. **Budget violations — что пробило кадр/лимит** — jobs that exceeded expected frame/service budgets.
-6. **Top single jobs by elapsed time** — worst individual spikes.
-7. **Top single jobs by budget load** — jobs that exceeded their expected budget the hardest.
-8. **Active jobs** — jobs still running when the report was flushed.
+1. **Profiler-first telemetry view** — answers the production questions: what was scheduled, blocked, polling, waiting on GPU, over frame budget, or still async.
+2. **Load chart — категории по суммарному времени** — high-level domain split.
+3. **Load chart — lanes** — `engine.jobs` lane split, including `Simulation`, `RenderPrep`, `Streaming`, `AssetIo`, `Plugin`, `Background` or provider-defined lanes.
+4. **Load chart — top offenders** — grouped suspect chart by service/plugin/method/name.
+5. **Top offenders by total elapsed time** — best table for answering who consumed the captured processor time.
+6. **Top methods by total elapsed time** — which service method accumulated the most captured time.
+7. **Budget violations — что пробило кадр/лимит** — jobs that exceeded expected frame/service budgets.
+8. **Frame budget violations — explicit frame envelope misses** — jobs that crossed explicit `frame_budget_ms`, grouped with frame/lane/wait/GPU/async fields.
+9. **Top single jobs by elapsed time** — worst individual spikes.
+10. **Top single jobs by budget load** — jobs that exceeded their expected budget the hardest.
+11. **Active jobs** — jobs still running when the report was flushed.
 
 Important metric rules:
 
@@ -136,6 +145,21 @@ load >= 1  = over budget
 ```
 
 Render/runtime subsystems may also emit sampled profiler events with explicit `elapsed_ms`; those samples are treated as first-class completed jobs instead of zero-duration event-bus noise.
+
+For profiler-first reports, emitters should attach these optional fields whenever they know them:
+
+```text
+lane
+priority
+dependency_group
+frame_id
+frame_budget_ms
+gpu_wait_ms
+wait_reason
+async_mode
+```
+
+These fields are intentionally domain-neutral. They let the profiler correlate `engine.jobs`, render frame envelopes, asset decode, texture upload, shader compile, streaming residency and world chunk budgets without importing renderer/assets/streaming internals.
 
 The profiler does not claim OS-level sampled CPU cycles. It identifies CPU-time suspects inside instrumented engine/plugin work. If a subsystem is not instrumented with job begin/end/status events, it will not appear as a time consumer.
 
@@ -151,6 +175,9 @@ CSV files are intended for spreadsheet inspection and external charting:
 | `profiler_sources_latest.csv` | source totals and share-of-time |
 | `profiler_methods_latest.csv` | method-level grouped suspects sorted by captured time |
 | `profiler_budget_violations_latest.csv` | jobs where `load >= 1.0` or elapsed time exceeds the slow threshold |
+| `profiler_lanes_latest.csv` | lane totals and share-of-time |
+| `profiler_first_latest.csv` | scheduled/blocked/polling/GPU-wait/frame-budget/async counters |
+| `profiler_frame_budget_latest.csv` | explicit frame-budget misses with frame/lane/wait fields |
 | `profiler_active_jobs_latest.csv` | jobs still running at flush time with current load |
 | `profiler_timeline_latest.csv` | completed jobs with run-relative start/end offsets |
 | `profiler_diagnostics_latest.csv` | warnings/errors emitted by profiler analysis |
@@ -162,11 +189,14 @@ Recommended spreadsheet charts:
 - scatter plot: `profiler_jobs_latest.csv` → `elapsed_ms` vs `load`, grouped by `category` or `source`;
 - bar chart: `profiler_methods_latest.csv` → `key` vs `total_elapsed_ms`;
 - table/filter: `profiler_budget_violations_latest.csv` → sort by `load` descending;
+- bar chart: `profiler_lanes_latest.csv` → `key` vs `total_elapsed_ms`;
+- status dashboard: `profiler_first_latest.csv` → scheduled/blocked/polling/GPU/frame-budget/async counters;
+- table/filter: `profiler_frame_budget_latest.csv` → sort by `over_frame_budget_ms` descending;
 - timeline chart: `profiler_timeline_latest.csv` → `start_offset_ms`, `end_offset_ms`, `category`.
 
 ## Report schema highlights
 
-The JSON report schema is `newengine.profiler.report.v2`. In addition to raw `active_jobs`, `completed_jobs` and `diagnostics`, it contains:
+The JSON report schema is `newengine.profiler.report.v3`. In addition to raw `active_jobs`, `completed_jobs` and `diagnostics`, it contains:
 
 ```text
 analysis.worst_offender
@@ -177,9 +207,13 @@ analysis.by_category_ranked
 analysis.by_source_ranked
 analysis.by_owner_ranked
 analysis.by_method_ranked
+analysis.by_lane_ranked
+analysis.profiler_first
+analysis.frame_budget_violations
 analysis.budget_violations
 summary.elapsed_percentiles_ms
 summary.load_percentiles
+summary.profiler_first
 scheduler
 flush_requests
 ```

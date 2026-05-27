@@ -80,6 +80,148 @@ fn parse_breakdown_parts(breakdown: &str) -> Vec<(String, f64)> {
     out
 }
 
+fn engine_job_envelope_to_profiler_event(envelope: Value) -> Value {
+    let Some(mut event) = envelope.get("event").cloned() else {
+        return envelope;
+    };
+    let Value::Object(event_obj) = &mut event else {
+        return event;
+    };
+
+    let envelope_meta = json!({
+        "schema": envelope.get("schema").cloned(),
+        "authority": envelope.get("authority").cloned(),
+        "executor": envelope.get("executor").cloned(),
+        "semantic_owner": envelope.get("semantic_owner").cloned(),
+    });
+    event_obj.insert("job_envelope".to_owned(), envelope_meta);
+    if event_obj.get("owner").is_none() {
+        if let Some(owner) = envelope.get("semantic_owner").cloned() {
+            event_obj.insert("owner".to_owned(), owner);
+        }
+    }
+    event
+}
+
+fn refresh_record_classification(record: &mut JobRecord) {
+    if let Some(v) = first_value_str(&record.metadata, &["/lane", "/metadata/lane", "/event/lane"]) {
+        record.lane = sanitize_non_empty(Some(v.as_str()), record.lane.as_str());
+    }
+    if let Some(v) = first_value_str(&record.metadata, &["/priority", "/metadata/priority", "/event/priority"]) {
+        record.priority = sanitize_non_empty(Some(v.as_str()), record.priority.as_str());
+    }
+    if let Some(v) = first_value_str(&record.metadata, &["/dependency_group", "/dependencyGroup", "/metadata/dependency_group", "/metadata/dependencyGroup"]) {
+        record.dependency_group = sanitize_non_empty(Some(v.as_str()), record.dependency_group.as_str());
+    }
+    record.frame_id = record.frame_id.or_else(|| first_value_u64(&record.metadata, &[
+        "/frame_id", "/frame", "/frame_index", "/metadata/frame_id", "/metadata/frame", "/metadata/frame_index",
+    ]));
+    record.frame_budget_ms = record.frame_budget_ms.or_else(|| first_value_f64(&record.metadata, &[
+        "/frame_budget_ms", "/budget/frame_ms", "/metadata/frame_budget_ms", "/metadata/budget/frame_ms",
+    ]));
+    record.gpu_wait_ms = record.gpu_wait_ms.or_else(|| first_value_f64(&record.metadata, &[
+        "/gpu_wait_ms", "/waited_gpu_ms", "/metadata/gpu_wait_ms", "/metadata/waited_gpu_ms",
+    ]));
+    if record.wait_reason.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+        record.wait_reason = first_value_str(&record.metadata, &[
+            "/wait_reason", "/blocked_reason", "/block_reason", "/metadata/wait_reason", "/metadata/blocked_reason", "/metadata/block_reason",
+        ]);
+    }
+    if record.async_mode.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+        record.async_mode = first_value_str(&record.metadata, &[
+            "/async_mode", "/scheduling_mode", "/metadata/async_mode", "/metadata/scheduling_mode",
+        ]);
+    }
+
+    let metadata_phase = first_value_str(&record.metadata, &["/phase", "/state_label", "/status", "/metadata/phase", "/metadata/state_label", "/metadata/status"]);
+    let phase = lower_join(&[
+        Some(record.status.as_str()),
+        Some(record.detail.as_str()),
+        metadata_phase.as_deref(),
+    ]);
+    let category = record.category.to_ascii_lowercase();
+    let wait_reason = record.wait_reason.as_deref().unwrap_or_default().to_ascii_lowercase();
+    let async_mode = record.async_mode.as_deref().unwrap_or_default().to_ascii_lowercase();
+
+    record.scheduled |= contains_any(&phase, &["scheduled", "queued", "queue", "accepted"]);
+    record.blocked |= contains_any(&phase, &["blocked", "waiting", "stalled"]) || contains_any(&wait_reason, &["blocked", "waiting", "dependency", "residency", "barrier"]);
+    record.polling |= contains_any(&phase, &["poll", "polling"]) || contains_any(&category, &["poll"]);
+    record.waited_on_gpu |= record.gpu_wait_ms.unwrap_or_default() > 0.0 || contains_any(&wait_reason, &["gpu", "fence", "present", "upload", "queue"]);
+    record.stayed_async |= first_value_bool(&record.metadata, &["/stayed_async", "/async", "/metadata/stayed_async", "/metadata/async"]).unwrap_or(false)
+        || contains_any(&async_mode, &["async", "engine_jobs", "job", "ticket", "poll"])
+        || contains_any(&category, &["shader.compile", "asset.decode", "texture.upload", "streaming", "residency", "renderprep", "render-prep"]);
+
+    if let (Some(elapsed), Some(frame_budget)) = (record.elapsed_ms, record.frame_budget_ms) {
+        record.exceeded_frame_budget |= elapsed > frame_budget.max(0.001);
+    }
+    record.exceeded_frame_budget |= first_value_bool(&record.metadata, &[
+        "/exceeded_frame_budget", "/frame_budget_exceeded", "/metadata/exceeded_frame_budget", "/metadata/frame_budget_exceeded",
+    ]).unwrap_or(false);
+}
+
+fn first_value_str(value: &Value, paths: &[&str]) -> Option<String> {
+    paths
+        .iter()
+        .filter_map(|path| value.pointer(path).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
+        .next()
+}
+
+fn first_value_u64(value: &Value, paths: &[&str]) -> Option<u64> {
+    paths.iter().find_map(|path| {
+        value.pointer(path).and_then(|v| v.as_u64().or_else(|| v.as_str()?.trim().parse::<u64>().ok()))
+    })
+}
+
+fn first_value_f64(value: &Value, paths: &[&str]) -> Option<f64> {
+    paths.iter().find_map(|path| value.pointer(path).and_then(value_to_f64_ms))
+}
+
+fn first_value_bool(value: &Value, paths: &[&str]) -> Option<bool> {
+    paths.iter().find_map(|path| {
+        value.pointer(path).and_then(|v| {
+            v.as_bool().or_else(|| {
+                let raw = v.as_str()?.trim().to_ascii_lowercase();
+                match raw.as_str() {
+                    "1" | "true" | "yes" | "y" | "on" => Some(true),
+                    "0" | "false" | "no" | "n" | "off" => Some(false),
+                    _ => None,
+                }
+            })
+        })
+    })
+}
+
+fn lower_join(parts: &[Option<&str>]) -> String {
+    parts.iter().filter_map(|v| *v).collect::<Vec<_>>().join(" ").to_ascii_lowercase()
+}
+
+fn is_high_frequency_zero_cost_event(category: &str, source: &str, name: &str, elapsed_ms: Option<f64>) -> bool {
+    if elapsed_ms.unwrap_or(0.0) > 0.0 {
+        return false;
+    }
+    let category = category.to_ascii_lowercase();
+    let source = source.to_ascii_lowercase();
+    let name = name.to_ascii_lowercase();
+    category == "event"
+        && (source == "raw-device" || source == "event_bus" || source == "cursor")
+        && (name.starts_with("winit.mouse_")
+            || name == "winit.mouse_delta"
+            || name == "winit.mouse_move"
+            || name == "winit.key"
+            || name == "winit.text_char")
+}
+
+fn recently_completed_duplicate_terminal(state: &ProfilerState, id: &str) -> bool {
+    state.completed.iter().rev().take(256).any(|record| record.id == id)
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
 pub(crate) struct ProfilerRuntime {
     pub(crate) cfg: ProfilerConfig,
     scheduler: Option<HostJobScheduler>,
@@ -147,7 +289,7 @@ impl ProfilerRuntime {
                 }
             }
             TOPIC_ENGINE_JOB_EVENT => {
-                let event = parsed.get("event").cloned().unwrap_or(parsed);
+                let event = engine_job_envelope_to_profiler_event(parsed);
                 if let Err(e) = self.record_engine_task_event_locked(&mut state, event) {
                     state.malformed_events = state.malformed_events.saturating_add(1);
                     Self::push_diag_locked(
@@ -265,13 +407,27 @@ impl ProfilerRuntime {
             .or(wire.label)
             .unwrap_or_else(|| id.clone());
 
-        let record = JobRecord {
+        let mut record = JobRecord {
             id: id.clone(),
             name,
             category,
             source: wire.source.unwrap_or_else(|| "event".to_owned()),
+            lane: sanitize_non_empty(wire.lane.as_deref(), "unspecified"),
+            priority: sanitize_non_empty(wire.priority.as_deref(), "unspecified"),
+            dependency_group: sanitize_non_empty(wire.dependency_group.as_deref(), "unspecified"),
+            frame_id: wire.frame_id,
             status: "running".to_owned(),
             detail: wire.detail.unwrap_or_default(),
+            scheduled: true,
+            blocked: false,
+            polling: false,
+            waited_on_gpu: false,
+            stayed_async: false,
+            exceeded_frame_budget: false,
+            frame_budget_ms: wire.frame_budget_ms,
+            gpu_wait_ms: wire.gpu_wait_ms,
+            wait_reason: wire.wait_reason,
+            async_mode: wire.async_mode,
             started_unix_ms: unix_ms(),
             ended_unix_ms: None,
             elapsed_ms: None,
@@ -283,6 +439,7 @@ impl ProfilerRuntime {
             error: None,
             metadata: wire.metadata.unwrap_or(value),
         };
+        refresh_record_classification(&mut record);
 
         if state.active.insert(id.clone(), ActiveJob { record, started_at: Instant::now() }).is_some() {
             Self::push_diag_locked(
@@ -301,6 +458,9 @@ impl ProfilerRuntime {
         let wire: JobEndWire = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
         let id = wire.id;
         let Some(mut active) = state.active.remove(&id) else {
+            if recently_completed_duplicate_terminal(state, &id) {
+                return Ok(());
+            }
             Self::push_diag_locked(
                 &self.cfg,
                 state,
@@ -331,6 +491,21 @@ impl ProfilerRuntime {
         } else {
             active.record.metadata = merge_metadata(active.record.metadata, value);
         }
+        if let Some(v) = wire.lane.as_deref() {
+            active.record.lane = sanitize_non_empty(Some(v), active.record.lane.as_str());
+        }
+        if let Some(v) = wire.priority.as_deref() {
+            active.record.priority = sanitize_non_empty(Some(v), active.record.priority.as_str());
+        }
+        if let Some(v) = wire.dependency_group.as_deref() {
+            active.record.dependency_group = sanitize_non_empty(Some(v), active.record.dependency_group.as_str());
+        }
+        active.record.frame_id = wire.frame_id.or(active.record.frame_id);
+        active.record.frame_budget_ms = wire.frame_budget_ms.or(active.record.frame_budget_ms);
+        active.record.gpu_wait_ms = wire.gpu_wait_ms.or(active.record.gpu_wait_ms);
+        active.record.wait_reason = wire.wait_reason.or_else(|| active.record.wait_reason.clone());
+        active.record.async_mode = wire.async_mode.or_else(|| active.record.async_mode.clone());
+        refresh_record_classification(&mut active.record);
 
         self.complete_job_locked(state, active.record);
         Ok(())
@@ -352,6 +527,14 @@ impl ProfilerRuntime {
                 "status": phase.clone(),
                 "detail": wire.detail.unwrap_or_default(),
                 "metadata": wire.metadata.unwrap_or(value),
+                "lane": wire.lane,
+                "priority": wire.priority,
+                "dependency_group": wire.dependency_group,
+                "frame_id": wire.frame_id,
+                "frame_budget_ms": wire.frame_budget_ms,
+                "gpu_wait_ms": wire.gpu_wait_ms,
+                "wait_reason": wire.wait_reason,
+                "async_mode": wire.async_mode,
             });
             self.record_end_value_locked(state, end_payload)?;
             return Ok(());
@@ -367,9 +550,24 @@ impl ProfilerRuntime {
             }
             active.record.progress = progress;
             active.record.budget_ms = budget.max(0.001);
+            if let Some(v) = wire.lane.as_deref() {
+                active.record.lane = sanitize_non_empty(Some(v), active.record.lane.as_str());
+            }
+            if let Some(v) = wire.priority.as_deref() {
+                active.record.priority = sanitize_non_empty(Some(v), active.record.priority.as_str());
+            }
+            if let Some(v) = wire.dependency_group.as_deref() {
+                active.record.dependency_group = sanitize_non_empty(Some(v), active.record.dependency_group.as_str());
+            }
+            active.record.frame_id = wire.frame_id.or(active.record.frame_id);
+            active.record.frame_budget_ms = wire.frame_budget_ms.or(active.record.frame_budget_ms);
+            active.record.gpu_wait_ms = wire.gpu_wait_ms.or(active.record.gpu_wait_ms);
+            active.record.wait_reason = wire.wait_reason.or(active.record.wait_reason.clone());
+            active.record.async_mode = wire.async_mode.or(active.record.async_mode.clone());
             if let Some(extra) = wire.metadata {
                 active.record.metadata = merge_metadata(active.record.metadata.clone(), extra);
             }
+            refresh_record_classification(&mut active.record);
             return Ok(());
         }
 
@@ -383,6 +581,14 @@ impl ProfilerRuntime {
             budget_ms: Some(budget),
             payload_bytes: None,
             metadata: wire.metadata.or(Some(value)),
+            lane: wire.lane,
+            priority: wire.priority,
+            dependency_group: wire.dependency_group,
+            frame_id: wire.frame_id,
+            frame_budget_ms: wire.frame_budget_ms,
+            gpu_wait_ms: wire.gpu_wait_ms,
+            wait_reason: wire.wait_reason,
+            async_mode: wire.async_mode,
         };
         let begin_value = serde_json::to_value(begin_to_json(begin)).map_err(|e| e.to_string())?;
         self.record_begin_value_locked(state, begin_value)?;
@@ -443,6 +649,7 @@ impl ProfilerRuntime {
             active.record.progress = progress;
             active.record.budget_ms = budget;
             active.record.metadata = merge_metadata(active.record.metadata.clone(), value);
+            refresh_record_classification(&mut active.record);
             return Ok(());
         }
 
@@ -453,6 +660,14 @@ impl ProfilerRuntime {
             "source": source,
             "detail": detail,
             "budget_ms": budget,
+            "lane": value.get("lane").cloned(),
+            "priority": value.get("priority").cloned(),
+            "dependency_group": value.get("dependency_group").cloned(),
+            "frame_id": value.get("frame_id").cloned(),
+            "frame_budget_ms": value.get("frame_budget_ms").cloned(),
+            "gpu_wait_ms": value.get("gpu_wait_ms").cloned(),
+            "wait_reason": value.get("wait_reason").cloned().or_else(|| value.get("blocked_reason").cloned()),
+            "async_mode": value.get("async_mode").cloned(),
             "metadata": value,
         });
         self.record_begin_value_locked(state, begin)
@@ -491,6 +706,9 @@ impl ProfilerRuntime {
             .and_then(Value::as_f64)
             .unwrap_or_else(|| self.default_budget_for("custom_event"))
             .max(0.001);
+        if is_high_frequency_zero_cost_event(&category, &source, &name, elapsed_ms) {
+            return;
+        }
         let load = elapsed_ms.map(|elapsed| elapsed / budget);
         let now = unix_ms();
         let started_unix_ms = elapsed_ms
@@ -502,8 +720,22 @@ impl ProfilerRuntime {
             name,
             category,
             source,
+            lane: "unspecified".to_owned(),
+            priority: "unspecified".to_owned(),
+            dependency_group: "unspecified".to_owned(),
+            frame_id: None,
             status: "completed".to_owned(),
             detail,
+            scheduled: false,
+            blocked: false,
+            polling: false,
+            waited_on_gpu: false,
+            stayed_async: false,
+            exceeded_frame_budget: false,
+            frame_budget_ms: None,
+            gpu_wait_ms: None,
+            wait_reason: None,
+            async_mode: None,
             started_unix_ms,
             ended_unix_ms: Some(now),
             elapsed_ms: Some(elapsed_ms.unwrap_or(0.0)),
@@ -516,6 +748,7 @@ impl ProfilerRuntime {
             metadata: value,
         };
         trim_payload_preview(&mut record.metadata, self.cfg.diagnostics.max_payload_preview_bytes);
+        refresh_record_classification(&mut record);
         self.complete_job_locked(state, record.clone());
         self.record_breakdown_parts_locked(state, &record);
     }
@@ -544,13 +777,27 @@ impl ProfilerRuntime {
                 "source_event": parent.metadata.clone(),
             });
             trim_payload_preview(&mut metadata, self.cfg.diagnostics.max_payload_preview_bytes);
-            self.complete_job_locked(state, JobRecord {
+            let mut part_record = JobRecord {
                 id,
                 name: format!("{}/{}", parent.name, part_name),
                 category: format!("{}.breakdown", parent.category),
                 source: parent.source.clone(),
+                lane: parent.lane.clone(),
+                priority: parent.priority.clone(),
+                dependency_group: parent.dependency_group.clone(),
+                frame_id: parent.frame_id,
                 status: "completed".to_owned(),
                 detail: format!("breakdown part from '{}'", parent.name),
+                scheduled: parent.scheduled,
+                blocked: parent.blocked,
+                polling: parent.polling,
+                waited_on_gpu: parent.waited_on_gpu,
+                stayed_async: parent.stayed_async,
+                exceeded_frame_budget: false,
+                frame_budget_ms: parent.frame_budget_ms,
+                gpu_wait_ms: None,
+                wait_reason: parent.wait_reason.clone(),
+                async_mode: parent.async_mode.clone(),
                 started_unix_ms: now.saturating_sub(elapsed_ms.round().max(0.0) as u128),
                 ended_unix_ms: Some(now),
                 elapsed_ms: Some(elapsed_ms),
@@ -561,11 +808,14 @@ impl ProfilerRuntime {
                 output_bytes: None,
                 error: None,
                 metadata,
-            });
+            };
+            refresh_record_classification(&mut part_record);
+            self.complete_job_locked(state, part_record);
         }
     }
 
     fn complete_job_locked(&self, state: &mut ProfilerState, mut record: JobRecord) {
+        refresh_record_classification(&mut record);
         trim_payload_preview(&mut record.metadata, self.cfg.diagnostics.max_payload_preview_bytes);
 
         let elapsed = record.elapsed_ms.unwrap_or_default();

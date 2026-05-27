@@ -112,6 +112,12 @@ pub(crate) struct ReportConfig {
     pub(crate) latest_methods_csv: String,
     #[serde(default = "default_latest_budget_violations_csv")]
     pub(crate) latest_budget_violations_csv: String,
+    #[serde(default = "default_latest_lanes_csv")]
+    pub(crate) latest_lanes_csv: String,
+    #[serde(default = "default_latest_profiler_first_csv")]
+    pub(crate) latest_profiler_first_csv: String,
+    #[serde(default = "default_latest_frame_budget_csv")]
+    pub(crate) latest_frame_budget_csv: String,
 }
 
 impl Default for ProfilerConfig {
@@ -196,6 +202,9 @@ impl Default for ReportConfig {
             latest_timeline_csv: default_latest_timeline_csv(),
             latest_methods_csv: default_latest_methods_csv(),
             latest_budget_violations_csv: default_latest_budget_violations_csv(),
+            latest_lanes_csv: default_latest_lanes_csv(),
+            latest_profiler_first_csv: default_latest_profiler_first_csv(),
+            latest_frame_budget_csv: default_latest_frame_budget_csv(),
         }
     }
 }
@@ -227,3 +236,6 @@ fn default_latest_diagnostics_csv() -> String { "profiler_diagnostics_latest.csv
 fn default_latest_timeline_csv() -> String { "profiler_timeline_latest.csv".to_owned() }
 fn default_latest_methods_csv() -> String { "profiler_methods_latest.csv".to_owned() }
 fn default_latest_budget_violations_csv() -> String { "profiler_budget_violations_latest.csv".to_owned() }
+fn default_latest_lanes_csv() -> String { "profiler_lanes_latest.csv".to_owned() }
+fn default_latest_profiler_first_csv() -> String { "profiler_first_latest.csv".to_owned() }
+fn default_latest_frame_budget_csv() -> String { "profiler_frame_budget_latest.csv".to_owned() }

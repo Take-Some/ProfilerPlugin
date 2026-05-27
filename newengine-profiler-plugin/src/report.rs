@@ -126,6 +126,13 @@ impl ProfilerRuntime {
         let mut by_owner: BTreeMap<String, AggregateStats> = BTreeMap::new();
         let mut by_offender: BTreeMap<String, AggregateStats> = BTreeMap::new();
         let mut by_method: BTreeMap<String, AggregateStats> = BTreeMap::new();
+        let mut by_lane: BTreeMap<String, AggregateStats> = BTreeMap::new();
+        let mut scheduled_jobs = 0u64;
+        let mut blocked_jobs = 0u64;
+        let mut polling_jobs = 0u64;
+        let mut gpu_wait_jobs = 0u64;
+        let mut async_jobs = 0u64;
+        let mut frame_budget_exceeded_jobs = 0u64;
         let mut elapsed_values = Vec::new();
         let mut load_values = Vec::new();
         let mut failed = 0u64;
@@ -150,6 +157,26 @@ impl ProfilerRuntime {
             total_payload_bytes = total_payload_bytes.saturating_add(job.payload_bytes.unwrap_or_default());
             total_output_bytes = total_output_bytes.saturating_add(job.output_bytes.unwrap_or_default());
             *by_status.entry(job.status.clone()).or_insert(0) += 1;
+            if job.scheduled { scheduled_jobs = scheduled_jobs.saturating_add(1); }
+            if job.blocked { blocked_jobs = blocked_jobs.saturating_add(1); }
+            if job.polling { polling_jobs = polling_jobs.saturating_add(1); }
+            if job.waited_on_gpu { gpu_wait_jobs = gpu_wait_jobs.saturating_add(1); }
+            if job.stayed_async { async_jobs = async_jobs.saturating_add(1); }
+            if job.exceeded_frame_budget { frame_budget_exceeded_jobs = frame_budget_exceeded_jobs.saturating_add(1); }
+
+            let lane = if job.lane.trim().is_empty() { "unspecified" } else { job.lane.as_str() };
+            accumulate(
+                by_lane.entry(lane.to_owned()).or_insert_with(|| AggregateStats {
+                    key: lane.to_owned(),
+                    category: job.category.clone(),
+                    source: job.source.clone(),
+                    sample_name: job.name.clone(),
+                    ..AggregateStats::default()
+                }),
+                job,
+                is_failed,
+                is_slow,
+            );
 
             let cat = by_category.entry(job.category.clone()).or_default();
             cat.count = cat.count.saturating_add(1);
@@ -262,19 +289,33 @@ impl ProfilerRuntime {
         finalize_aggregates(&mut by_owner, total_elapsed_ms);
         finalize_aggregates(&mut by_offender, total_elapsed_ms);
         finalize_aggregates(&mut by_method, total_elapsed_ms);
+        finalize_aggregates(&mut by_lane, total_elapsed_ms);
 
         let source_ranked = ranked_aggregates(by_source, JSON_TOP_LIMIT);
         let owner_ranked = ranked_aggregates(by_owner, JSON_TOP_LIMIT);
         let offender_ranked = ranked_aggregates(by_offender, JSON_TOP_LIMIT);
         let method_ranked = ranked_aggregates(by_method, JSON_TOP_LIMIT);
+        let lane_ranked = ranked_aggregates(by_lane, JSON_TOP_LIMIT);
         let top_elapsed_jobs = ranked_jobs_by(&state.completed, "elapsed", JSON_TOP_LIMIT);
         let top_load_jobs = ranked_jobs_by(&state.completed, "load", JSON_TOP_LIMIT);
         let budget_violations = ranked_budget_violations(&state.completed, self.cfg.diagnostics.slow_job_warn_ms, JSON_TOP_LIMIT);
+        let frame_budget_violations = ranked_frame_budget_violations(&state.completed, JSON_TOP_LIMIT);
+        let profiler_first = json!({
+            "scheduled_jobs": scheduled_jobs,
+            "blocked_jobs": blocked_jobs,
+            "polling_jobs": polling_jobs,
+            "gpu_wait_jobs": gpu_wait_jobs,
+            "async_jobs": async_jobs,
+            "frame_budget_exceeded_jobs": frame_budget_exceeded_jobs,
+            "async_share_percent": percent_of(async_jobs as f64, state.completed.len() as f64),
+            "blocked_share_percent": percent_of(blocked_jobs as f64, state.completed.len() as f64),
+            "gpu_wait_share_percent": percent_of(gpu_wait_jobs as f64, state.completed.len() as f64),
+        });
         let elapsed_percentiles = percentiles_json(elapsed_values);
         let load_percentiles = percentiles_json(load_values);
 
         json!({
-            "schema": "newengine.profiler.report.v2",
+            "schema": "newengine.profiler.report.v3",
             "reason": reason,
             "generated_unix_ms": unix_ms(),
             "plugin": {
@@ -309,6 +350,7 @@ impl ProfilerRuntime {
                 "reports_failed": state.reports_failed,
                 "by_status": by_status,
                 "by_category": by_category,
+                "profiler_first": profiler_first.clone(),
             },
             "analysis": {
                 "human_reading_order": [
@@ -319,7 +361,10 @@ impl ProfilerRuntime {
                     "by_category_ranked",
                     "by_source_ranked",
                     "by_method_ranked",
+                    "by_lane_ranked",
+                    "profiler_first",
                     "budget_violations",
+                    "frame_budget_violations",
                     "active_jobs"
                 ],
                 "interpretation": "elapsed_ms is observed wall-clock time captured by profiler events; load = elapsed_ms / budget_ms. It identifies CPU-time suspects inside instrumented engine/plugin work, not OS-level sampled CPU cycles.",
@@ -328,10 +373,13 @@ impl ProfilerRuntime {
                 "by_source_ranked": source_ranked,
                 "by_owner_ranked": owner_ranked,
                 "by_method_ranked": method_ranked,
+                "by_lane_ranked": lane_ranked,
+                "profiler_first": profiler_first,
                 "top_offenders_by_total_elapsed": offender_ranked,
                 "top_completed_jobs_by_elapsed": top_elapsed_jobs,
                 "top_completed_jobs_by_load": top_load_jobs,
                 "budget_violations": budget_violations,
+                "frame_budget_violations": frame_budget_violations,
             },
             "active_jobs": active_jobs,
             "completed_jobs": completed_jobs,
@@ -420,6 +468,32 @@ impl ProfilerRuntime {
         }
         let _ = writeln!(out);
 
+        let profiler_first = analysis.get("profiler_first").or_else(|| summary.get("profiler_first")).unwrap_or(&Value::Null);
+        let _ = writeln!(out, "## Profiler-first telemetry view");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "| Question | Count | Share | Meaning |");
+        let _ = writeln!(out, "|---|---:|---:|---|");
+        let profiler_rows = [
+            ("what was scheduled", "scheduled_jobs", "", "jobs that entered the visible scheduling path"),
+            ("what was blocked", "blocked_jobs", "blocked_share_percent", "jobs that reported blocked/waiting/dependency/residency/barrier state"),
+            ("what was polling", "polling_jobs", "", "jobs/status events that stayed in a poll/ticket loop"),
+            ("what waited on GPU", "gpu_wait_jobs", "gpu_wait_share_percent", "jobs with gpu_wait_ms or GPU/fence/present/upload wait reason"),
+            ("what exceeded frame budget", "frame_budget_exceeded_jobs", "", "jobs where elapsed_ms exceeded explicit frame_budget_ms"),
+            ("what stayed async", "async_jobs", "async_share_percent", "jobs tagged as async/ticket/engine.jobs/render-prep/streaming work"),
+        ];
+        for (question, count_key, share_key, meaning) in profiler_rows {
+            let count = profiler_first.get(count_key).and_then(Value::as_u64).unwrap_or(0);
+            let share = if share_key.is_empty() { None } else { profiler_first.get(share_key).and_then(Value::as_f64) };
+            let share_text = share.map(|v| format!("{v:.1}%")).unwrap_or_else(|| "-".to_owned());
+            let _ = writeln!(out, "| `{question}` | `{count}` | `{share_text}` | {meaning} |");
+        }
+        let _ = writeln!(out);
+        let _ = writeln!(out, "> [!NOTE] REQUEST NOTE — profiler-first culture");
+        let _ = writeln!(out, "> **У нас сейчас:** report теперь отделяет timing от scheduling/waiting/async facts, чтобы не путать `ms` с причиной тормоза.");
+        let _ = writeln!(out, "> **Было бы здорово:** every heavy lane should emit `lane`, `priority`, `dependency_group`, `frame_id`, `frame_budget_ms`, `gpu_wait_ms`, `wait_reason`, and `async_mode` when known.");
+        let _ = writeln!(out, "> **Technical details (EN):** StarProfiler report schema is `newengine.profiler.report.v3`; CSV consumers can read `profiler_first_latest.csv`, `profiler_lanes_latest.csv`, and `profiler_frame_budget_latest.csv`.");
+        let _ = writeln!(out);
+
         let _ = writeln!(out, "## Flush and scheduling policy");
         let _ = writeln!(out);
         let scheduler = report.get("scheduler").unwrap_or(&Value::Null);
@@ -468,6 +542,13 @@ impl ProfilerRuntime {
             &mut out,
             "## Load chart — top offenders",
             analysis.get("top_offenders_by_total_elapsed").and_then(Value::as_array),
+            "key",
+            total_ms,
+        );
+        write_ranked_chart(
+            &mut out,
+            "## Load chart — lanes",
+            analysis.get("by_lane_ranked").and_then(Value::as_array),
             "key",
             total_ms,
         );
@@ -529,6 +610,35 @@ impl ProfilerRuntime {
         if let Some(jobs) = analysis.get("budget_violations").and_then(Value::as_array) {
             for (idx, job) in jobs.iter().take(MD_TOP_LIMIT).enumerate() {
                 write_job_row(&mut out, idx + 1, job);
+            }
+        }
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "## Frame budget violations — explicit frame envelope misses");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "| Rank | Frame | Lane | Category | Source | Name | Elapsed ms | Frame budget ms | Over ms | GPU wait ms | Wait reason | Async | Detail |");
+        let _ = writeln!(out, "|---:|---:|---|---|---|---|---:|---:|---:|---:|---|---|---|");
+        if let Some(jobs) = analysis.get("frame_budget_violations").and_then(Value::as_array) {
+            for (idx, job) in jobs.iter().take(MD_TOP_LIMIT).enumerate() {
+                let elapsed = job.get("elapsed_ms").and_then(Value::as_f64).unwrap_or(0.0);
+                let frame_budget = job.get("frame_budget_ms").and_then(Value::as_f64).unwrap_or(0.0);
+                let over = (elapsed - frame_budget).max(0.0);
+                let _ = writeln!(out,
+                    "| {} | {} | `{}` | `{}` | `{}` | `{}` | {:.3} | {:.3} | {:.3} | {:.3} | {} | `{}` | {} |",
+                    idx + 1,
+                    job.get("frame_id").and_then(Value::as_u64).map(|v| v.to_string()).unwrap_or_else(|| "-".to_owned()),
+                    escape_md(job.get("lane").and_then(Value::as_str).unwrap_or("-")),
+                    escape_md(job.get("category").and_then(Value::as_str).unwrap_or("-")),
+                    escape_md(job.get("source").and_then(Value::as_str).unwrap_or("-")),
+                    escape_md(job.get("name").and_then(Value::as_str).unwrap_or("-")),
+                    elapsed,
+                    frame_budget,
+                    over,
+                    job.get("gpu_wait_ms").and_then(Value::as_f64).unwrap_or(0.0),
+                    escape_md(job.get("wait_reason").and_then(Value::as_str).unwrap_or("")),
+                    job.get("stayed_async").and_then(Value::as_bool).unwrap_or(false),
+                    escape_md(job.get("detail").and_then(Value::as_str).unwrap_or("")),
+                );
             }
         }
         let _ = writeln!(out);
@@ -639,6 +749,9 @@ impl ProfilerRuntime {
         let _ = writeln!(out, "| `profiler_timeline_latest.csv` | completed jobs with run-relative start/end offsets |");
         let _ = writeln!(out, "| `profiler_methods_latest.csv` | method/service grouped timing totals |");
         let _ = writeln!(out, "| `profiler_budget_violations_latest.csv` | jobs where `load >= 1.0` or slow threshold was crossed |");
+        let _ = writeln!(out, "| `profiler_first_latest.csv` | scheduled/blocked/polling/GPU-wait/frame-budget/async counters |");
+        let _ = writeln!(out, "| `profiler_lanes_latest.csv` | lane totals and share-of-time |");
+        let _ = writeln!(out, "| `profiler_frame_budget_latest.csv` | explicit frame-budget misses with lane/frame/wait fields |");
         let _ = writeln!(out, "| `profiler_diagnostics_latest.csv` | warnings/errors emitted by profiler analysis |");
         let _ = writeln!(out);
 
@@ -852,6 +965,9 @@ impl ProfilerRuntime {
             ("timeline", self.cfg.report.latest_timeline_csv.clone(), format!("profiler_timeline_{created_utc}.csv"), csv_timeline(report)),
             ("methods", self.cfg.report.latest_methods_csv.clone(), format!("profiler_methods_{created_utc}.csv"), csv_methods(report)),
             ("budget_violations", self.cfg.report.latest_budget_violations_csv.clone(), format!("profiler_budget_violations_{created_utc}.csv"), csv_budget_violations(report)),
+            ("lanes", self.cfg.report.latest_lanes_csv.clone(), format!("profiler_lanes_{created_utc}.csv"), csv_lanes(report)),
+            ("profiler_first", self.cfg.report.latest_profiler_first_csv.clone(), format!("profiler_first_{created_utc}.csv"), csv_profiler_first(report)),
+            ("frame_budget", self.cfg.report.latest_frame_budget_csv.clone(), format!("profiler_frame_budget_{created_utc}.csv"), csv_frame_budget(report)),
         ];
 
         let mut artifacts = Vec::with_capacity(specs.len());
@@ -926,6 +1042,25 @@ fn ranked_budget_violations(jobs: &std::collections::VecDeque<JobRecord>, slow_j
         .collect::<Vec<_>>();
     values.sort_by(|a, b| {
         cmp_f64_desc(a.load.unwrap_or_default(), b.load.unwrap_or_default())
+            .then_with(|| cmp_f64_desc(a.elapsed_ms.unwrap_or_default(), b.elapsed_ms.unwrap_or_default()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    values
+        .into_iter()
+        .take(limit)
+        .map(|job| serde_json::to_value(job).unwrap_or(Value::Null))
+        .collect()
+}
+
+fn ranked_frame_budget_violations(jobs: &std::collections::VecDeque<JobRecord>, limit: usize) -> Vec<Value> {
+    let mut values = jobs
+        .iter()
+        .filter(|job| job.exceeded_frame_budget)
+        .collect::<Vec<_>>();
+    values.sort_by(|a, b| {
+        let a_over = (a.elapsed_ms.unwrap_or_default() - a.frame_budget_ms.unwrap_or_default()).max(0.0);
+        let b_over = (b.elapsed_ms.unwrap_or_default() - b.frame_budget_ms.unwrap_or_default()).max(0.0);
+        cmp_f64_desc(a_over, b_over)
             .then_with(|| cmp_f64_desc(a.elapsed_ms.unwrap_or_default(), b.elapsed_ms.unwrap_or_default()))
             .then_with(|| a.name.cmp(&b.name))
     });
@@ -1067,14 +1202,26 @@ fn shorten(s: &str, max_chars: usize) -> String {
 
 fn csv_completed_jobs(report: &Value) -> String {
     let mut out = csv_header(&[
-        "id", "status", "category", "source", "name", "elapsed_ms", "budget_ms", "load", "load_percent", "over_budget", "started_unix_ms", "ended_unix_ms", "payload_bytes", "output_bytes", "service_id", "method", "plugin_id", "gateway", "error", "detail",
+        "id", "status", "category", "source", "lane", "priority", "dependency_group", "frame_id", "job_domain", "job_pass", "executor", "name",
+        "elapsed_ms", "budget_ms", "frame_budget_ms", "load", "load_percent", "over_budget", "exceeded_frame_budget",
+        "gpu_wait_ms", "wait_reason", "scheduled", "blocked", "polling", "waited_on_gpu", "stayed_async", "async_mode",
+        "started_unix_ms", "ended_unix_ms", "payload_bytes", "output_bytes", "service_id", "method", "plugin_id", "gateway", "error", "detail",
     ]);
     if let Some(jobs) = report.get("completed_jobs").and_then(Value::as_array) {
         for job in jobs {
             let load = f(job, "load");
             csv_push(&mut out, &[
-                s(job, "id"), s(job, "status"), s(job, "category"), s(job, "source"), s(job, "name"),
-                f(job, "elapsed_ms"), f(job, "budget_ms"), load.clone(), format!("{:.3}", load.parse::<f64>().unwrap_or(0.0) * 100.0), (load.parse::<f64>().unwrap_or(0.0) >= 1.0).to_string(),
+                s(job, "id"), s(job, "status"), s(job, "category"), s(job, "source"),
+                direct_or_metadata(job, "lane", &["/metadata/lane", "/metadata/event/lane", "/metadata/metadata/lane"]),
+                direct_or_metadata(job, "priority", &["/metadata/priority", "/metadata/event/priority", "/metadata/metadata/priority"]),
+                direct_or_metadata(job, "dependency_group", &["/metadata/dependency_group", "/metadata/event/dependency_group", "/metadata/metadata/dependency_group"]),
+                direct_or_metadata(job, "frame_id", &["/metadata/frame_id", "/metadata/event/frame_id", "/metadata/metadata/frame_id"]),
+                direct_or_metadata(job, "job_domain", &["/metadata/job_domain", "/metadata/event/job_domain", "/metadata/metadata/job_domain"]),
+                direct_or_metadata(job, "job_pass", &["/metadata/job_pass", "/metadata/event/job_pass", "/metadata/metadata/job_pass"]),
+                direct_or_metadata(job, "executor", &["/metadata/executor", "/metadata/event/executor", "/metadata/metadata/executor"]),
+                s(job, "name"),
+                f(job, "elapsed_ms"), f(job, "budget_ms"), f(job, "frame_budget_ms"), load.clone(), format!("{:.3}", load.parse::<f64>().unwrap_or(0.0) * 100.0), (load.parse::<f64>().unwrap_or(0.0) >= 1.0).to_string(), b(job, "exceeded_frame_budget"),
+                f(job, "gpu_wait_ms"), s(job, "wait_reason"), b(job, "scheduled"), b(job, "blocked"), b(job, "polling"), b(job, "waited_on_gpu"), b(job, "stayed_async"), s(job, "async_mode"),
                 scalar(job.get("started_unix_ms")), scalar(job.get("ended_unix_ms")), scalar(job.get("payload_bytes")), scalar(job.get("output_bytes")),
                 metadata_csv(job, &["/metadata/service_id", "/metadata/metadata/service_id"]),
                 metadata_csv(job, &["/metadata/method", "/metadata/method_name", "/metadata/metadata/method"]),
@@ -1109,14 +1256,50 @@ fn csv_methods(report: &Value) -> String {
     csv_aggregate(report.pointer("/analysis/by_method_ranked").and_then(Value::as_array))
 }
 
+fn csv_lanes(report: &Value) -> String {
+    csv_aggregate(report.pointer("/analysis/by_lane_ranked").and_then(Value::as_array))
+}
+
+fn csv_profiler_first(report: &Value) -> String {
+    let mut out = csv_header(&[
+        "scheduled_jobs", "blocked_jobs", "blocked_share_percent", "polling_jobs", "gpu_wait_jobs", "gpu_wait_share_percent", "frame_budget_exceeded_jobs", "async_jobs", "async_share_percent",
+    ]);
+    let row = report.pointer("/analysis/profiler_first").or_else(|| report.pointer("/summary/profiler_first")).unwrap_or(&Value::Null);
+    csv_push(&mut out, &[
+        u(row, "scheduled_jobs"), u(row, "blocked_jobs"), f(row, "blocked_share_percent"), u(row, "polling_jobs"), u(row, "gpu_wait_jobs"), f(row, "gpu_wait_share_percent"), u(row, "frame_budget_exceeded_jobs"), u(row, "async_jobs"), f(row, "async_share_percent"),
+    ]);
+    out
+}
+
+fn csv_frame_budget(report: &Value) -> String {
+    let mut out = csv_header(&["rank", "id", "frame_id", "status", "lane", "priority", "dependency_group", "category", "source", "name", "elapsed_ms", "frame_budget_ms", "over_frame_budget_ms", "gpu_wait_ms", "wait_reason", "stayed_async", "async_mode", "detail"]);
+    if let Some(jobs) = report.pointer("/analysis/frame_budget_violations").and_then(Value::as_array) {
+        for (idx, job) in jobs.iter().enumerate() {
+            let elapsed = job.get("elapsed_ms").and_then(Value::as_f64).unwrap_or(0.0);
+            let frame_budget = job.get("frame_budget_ms").and_then(Value::as_f64).unwrap_or(0.0);
+            csv_push(&mut out, &[
+                rank(idx), s(job, "id"), scalar(job.get("frame_id")), s(job, "status"), direct_or_metadata(job, "lane", &["/metadata/lane", "/metadata/event/lane"]), direct_or_metadata(job, "priority", &["/metadata/priority", "/metadata/event/priority"]), direct_or_metadata(job, "dependency_group", &["/metadata/dependency_group", "/metadata/event/dependency_group"]), s(job, "category"), s(job, "source"), s(job, "name"), f(job, "elapsed_ms"), f(job, "frame_budget_ms"), format!("{:.6}", (elapsed - frame_budget).max(0.0)), f(job, "gpu_wait_ms"), s(job, "wait_reason"), b(job, "stayed_async"), s(job, "async_mode"), s(job, "detail"),
+            ]);
+        }
+    }
+    out
+}
+
 fn csv_budget_violations(report: &Value) -> String {
-    let mut out = csv_header(&["rank", "id", "status", "category", "source", "name", "elapsed_ms", "budget_ms", "load", "load_percent", "started_unix_ms", "ended_unix_ms", "service_id", "method", "plugin_id", "gateway", "error", "detail"]);
+    let mut out = csv_header(&["rank", "id", "status", "category", "source", "lane", "priority", "dependency_group", "frame_id", "job_domain", "job_pass", "executor", "name", "elapsed_ms", "budget_ms", "frame_budget_ms", "load", "load_percent", "exceeded_frame_budget", "gpu_wait_ms", "wait_reason", "stayed_async", "async_mode", "started_unix_ms", "ended_unix_ms", "service_id", "method", "plugin_id", "gateway", "error", "detail"]);
     if let Some(jobs) = report.pointer("/analysis/budget_violations").and_then(Value::as_array) {
         for (idx, job) in jobs.iter().enumerate() {
             let load = f(job, "load");
             csv_push(&mut out, &[
-                rank(idx), s(job, "id"), s(job, "status"), s(job, "category"), s(job, "source"), s(job, "name"),
-                f(job, "elapsed_ms"), f(job, "budget_ms"), load.clone(), format!("{:.3}", load.parse::<f64>().unwrap_or(0.0) * 100.0),
+                rank(idx), s(job, "id"), s(job, "status"), s(job, "category"), s(job, "source"),
+                direct_or_metadata(job, "lane", &["/metadata/lane", "/metadata/event/lane", "/metadata/metadata/lane"]),
+                direct_or_metadata(job, "priority", &["/metadata/priority", "/metadata/event/priority", "/metadata/metadata/priority"]),
+                direct_or_metadata(job, "dependency_group", &["/metadata/dependency_group", "/metadata/event/dependency_group", "/metadata/metadata/dependency_group"]),
+                direct_or_metadata(job, "frame_id", &["/metadata/frame_id", "/metadata/event/frame_id", "/metadata/metadata/frame_id"]),
+                direct_or_metadata(job, "job_domain", &["/metadata/job_domain", "/metadata/event/job_domain", "/metadata/metadata/job_domain"]),
+                direct_or_metadata(job, "job_pass", &["/metadata/job_pass", "/metadata/event/job_pass", "/metadata/metadata/job_pass"]),
+                direct_or_metadata(job, "executor", &["/metadata/executor", "/metadata/event/executor", "/metadata/metadata/executor"]),
+                s(job, "name"), f(job, "elapsed_ms"), f(job, "budget_ms"), f(job, "frame_budget_ms"), load.clone(), format!("{:.3}", load.parse::<f64>().unwrap_or(0.0) * 100.0), b(job, "exceeded_frame_budget"), f(job, "gpu_wait_ms"), s(job, "wait_reason"), b(job, "stayed_async"), s(job, "async_mode"),
                 scalar(job.get("started_unix_ms")), scalar(job.get("ended_unix_ms")),
                 metadata_csv(job, &["/metadata/service_id", "/metadata/metadata/service_id"]),
                 metadata_csv(job, &["/metadata/method", "/metadata/method_name", "/metadata/metadata/method"]),
@@ -1140,11 +1323,22 @@ fn csv_aggregate(rows: Option<&Vec<Value>>) -> String {
 }
 
 fn csv_active_jobs(report: &Value) -> String {
-    let mut out = csv_header(&["id", "status", "category", "source", "name", "active_elapsed_ms", "budget_ms", "current_load", "current_load_percent", "current_over_budget", "progress", "started_unix_ms", "detail"]);
+    let mut out = csv_header(&["id", "status", "category", "source", "lane", "priority", "dependency_group", "frame_id", "job_domain", "job_pass", "executor", "name", "active_elapsed_ms", "budget_ms", "frame_budget_ms", "current_load", "current_load_percent", "current_over_budget", "progress", "blocked", "polling", "waited_on_gpu", "stayed_async", "gpu_wait_ms", "wait_reason", "async_mode", "started_unix_ms", "detail"]);
     if let Some(jobs) = report.get("active_jobs").and_then(Value::as_array) {
         for job in jobs {
             let load = job.get("current_load").and_then(Value::as_f64).unwrap_or(0.0);
-            csv_push(&mut out, &[s(job, "id"), s(job, "status"), s(job, "category"), s(job, "source"), s(job, "name"), f(job, "active_elapsed_ms"), f(job, "budget_ms"), format!("{load:.6}"), format!("{:.3}", load * 100.0), (load >= 1.0).to_string(), f(job, "progress"), scalar(job.get("started_unix_ms")), s(job, "detail")]);
+            csv_push(&mut out, &[
+                s(job, "id"), s(job, "status"), s(job, "category"), s(job, "source"),
+                direct_or_metadata(job, "lane", &["/metadata/lane", "/metadata/event/lane", "/metadata/metadata/lane"]),
+                direct_or_metadata(job, "priority", &["/metadata/priority", "/metadata/event/priority", "/metadata/metadata/priority"]),
+                direct_or_metadata(job, "dependency_group", &["/metadata/dependency_group", "/metadata/event/dependency_group", "/metadata/metadata/dependency_group"]),
+                direct_or_metadata(job, "frame_id", &["/metadata/frame_id", "/metadata/event/frame_id", "/metadata/metadata/frame_id"]),
+                direct_or_metadata(job, "job_domain", &["/metadata/job_domain", "/metadata/event/job_domain", "/metadata/metadata/job_domain"]),
+                direct_or_metadata(job, "job_pass", &["/metadata/job_pass", "/metadata/event/job_pass", "/metadata/metadata/job_pass"]),
+                direct_or_metadata(job, "executor", &["/metadata/executor", "/metadata/event/executor", "/metadata/metadata/executor"]),
+                s(job, "name"), f(job, "active_elapsed_ms"), f(job, "budget_ms"), f(job, "frame_budget_ms"), format!("{load:.6}"), format!("{:.3}", load * 100.0), (load >= 1.0).to_string(), f(job, "progress"),
+                b(job, "blocked"), b(job, "polling"), b(job, "waited_on_gpu"), b(job, "stayed_async"), f(job, "gpu_wait_ms"), s(job, "wait_reason"), s(job, "async_mode"), scalar(job.get("started_unix_ms")), s(job, "detail"),
+            ]);
         }
     }
     out
@@ -1162,12 +1356,23 @@ fn csv_diagnostics(report: &Value) -> String {
 
 fn csv_timeline(report: &Value) -> String {
     let run_start = report.pointer("/run/started_unix_ms").and_then(Value::as_u64).unwrap_or(0);
-    let mut out = csv_header(&["id", "category", "source", "name", "status", "start_offset_ms", "end_offset_ms", "elapsed_ms", "budget_ms", "load", "detail"]);
+    let mut out = csv_header(&["id", "category", "source", "name", "status", "start_offset_ms", "end_offset_ms", "elapsed_ms", "budget_ms", "load", "frame_id", "dependency_group", "job_domain", "job_pass", "lane", "priority", "executor", "detail"]);
     if let Some(jobs) = report.get("completed_jobs").and_then(Value::as_array) {
         for job in jobs {
             let start = job.get("started_unix_ms").and_then(Value::as_u64).unwrap_or(run_start).saturating_sub(run_start);
             let end = job.get("ended_unix_ms").and_then(Value::as_u64).unwrap_or(run_start).saturating_sub(run_start);
-            csv_push(&mut out, &[s(job, "id"), s(job, "category"), s(job, "source"), s(job, "name"), s(job, "status"), start.to_string(), end.to_string(), f(job, "elapsed_ms"), f(job, "budget_ms"), f(job, "load"), s(job, "detail")]);
+            csv_push(&mut out, &[
+                s(job, "id"), s(job, "category"), s(job, "source"), s(job, "name"), s(job, "status"),
+                start.to_string(), end.to_string(), f(job, "elapsed_ms"), f(job, "budget_ms"), f(job, "load"),
+                direct_or_metadata(job, "frame_id", &["/metadata/frame_id", "/metadata/event/frame_id", "/metadata/metadata/frame_id"]),
+                direct_or_metadata(job, "dependency_group", &["/metadata/dependency_group", "/metadata/event/dependency_group", "/metadata/metadata/dependency_group"]),
+                direct_or_metadata(job, "job_domain", &["/metadata/job_domain", "/metadata/event/job_domain", "/metadata/metadata/job_domain"]),
+                direct_or_metadata(job, "job_pass", &["/metadata/job_pass", "/metadata/event/job_pass", "/metadata/metadata/job_pass"]),
+                direct_or_metadata(job, "lane", &["/metadata/lane", "/metadata/event/lane", "/metadata/metadata/lane"]),
+                direct_or_metadata(job, "priority", &["/metadata/priority", "/metadata/event/priority", "/metadata/metadata/priority"]),
+                direct_or_metadata(job, "executor", &["/metadata/executor", "/metadata/event/executor", "/metadata/metadata/executor"]),
+                s(job, "detail"),
+            ]);
         }
     }
     out
@@ -1201,13 +1406,23 @@ fn rank(idx: usize) -> String { (idx + 1).to_string() }
 fn s(row: &Value, key: &str) -> String { row.get(key).and_then(Value::as_str).unwrap_or("").to_owned() }
 fn u(row: &Value, key: &str) -> String { row.get(key).and_then(Value::as_u64).map(|v| v.to_string()).unwrap_or_default() }
 fn f(row: &Value, key: &str) -> String { row.get(key).and_then(Value::as_f64).map(|v| format!("{v:.6}")).unwrap_or_default() }
+fn b(row: &Value, key: &str) -> String { row.get(key).and_then(Value::as_bool).unwrap_or(false).to_string() }
+
+fn direct_or_metadata(row: &Value, key: &str, paths: &[&str]) -> String {
+    row.get(key)
+        .map(format_json_scalar)
+        .filter(|value| !value.trim().is_empty() && value != "null")
+        .unwrap_or_else(|| metadata_csv(row, paths))
+}
 
 fn scalar(value: Option<&Value>) -> String {
     value.map(format_json_scalar).unwrap_or_default()
 }
 
 fn metadata_csv(row: &Value, paths: &[&str]) -> String {
-    paths.iter().find_map(|path| row.pointer(path).and_then(Value::as_str)).unwrap_or("").to_owned()
+    paths.iter()
+        .find_map(|path| row.pointer(path).map(format_json_scalar))
+        .unwrap_or_default()
 }
 
 fn safe_archive_prefix(value: &str) -> String {

@@ -66,7 +66,8 @@ impl ProfilerPlugin {
                 PROFILER_SERVICE_ID,
                 PROFILER_BACKEND_CAPABILITY_ID,
             ))
-            .backend("event-sink")
+            .provider_route(PROFILER_PROVIDER_GATEWAY_ID)
+            .backend("starprofiler")
             .priority(100),
         ))
         .build()

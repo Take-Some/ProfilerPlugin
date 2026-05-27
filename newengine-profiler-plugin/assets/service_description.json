@@ -2,6 +2,7 @@
   "schema": "newengine.profiler.service.v1",
   "service_id": "profiler.api",
   "engine_gateway": "engine.profiler",
+  "provider_name": "StarProfiler",
   "capability": "profiler.backend",
   "methods": [
     "info_json",
@@ -37,7 +38,10 @@
     "timeline": "cache/profiler/profiler_timeline_latest.csv",
     "diagnostics": "cache/profiler/profiler_diagnostics_latest.csv",
     "methods": "cache/profiler/profiler_methods_latest.csv",
-    "budget_violations": "cache/profiler/profiler_budget_violations_latest.csv"
+    "budget_violations": "cache/profiler/profiler_budget_violations_latest.csv",
+    "lanes": "cache/profiler/profiler_lanes_latest.csv",
+    "profiler_first": "cache/profiler/profiler_first_latest.csv",
+    "frame_budget": "cache/profiler/profiler_frame_budget_latest.csv"
   },
   "report_archive_contains": [
     "manifest.json",
@@ -52,5 +56,26 @@
     "default_service_flush_mode": "engine_jobs",
     "worker_entrypoint": "profiler.flush_report_sync_v1",
     "hidden_thread_fallback": false
-  }
+  },
+  "report_schema": "newengine.profiler.report.v3",
+  "report_classifies": [
+    "scheduled jobs",
+    "blocked jobs",
+    "polling jobs",
+    "GPU wait jobs",
+    "frame-budget violations",
+    "jobs that stayed async"
+  ],
+  "profiler_first_fields": [
+    "lane",
+    "priority",
+    "dependency_group",
+    "frame_id",
+    "frame_budget_ms",
+    "gpu_wait_ms",
+    "wait_reason",
+    "async_mode"
+  ],
+  "provider_route": "engine.profiler.starprofiler",
+  "domain_rule": "engine_gateway is the root backend API; provider_route is the concrete implementation identity, not a separate backend domain."
 }

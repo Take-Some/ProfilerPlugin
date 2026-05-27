@@ -17,6 +17,14 @@ pub(crate) fn begin_to_json(wire: JobBeginWire) -> Value {
         "budget_ms": wire.budget_ms,
         "payload_bytes": wire.payload_bytes,
         "metadata": wire.metadata,
+        "lane": wire.lane,
+        "priority": wire.priority,
+        "dependency_group": wire.dependency_group,
+        "frame_id": wire.frame_id,
+        "frame_budget_ms": wire.frame_budget_ms,
+        "gpu_wait_ms": wire.gpu_wait_ms,
+        "wait_reason": wire.wait_reason,
+        "async_mode": wire.async_mode,
     })
 }
 

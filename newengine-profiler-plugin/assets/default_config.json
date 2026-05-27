@@ -39,7 +39,10 @@
     "latest_diagnostics_csv": "profiler_diagnostics_latest.csv",
     "latest_timeline_csv": "profiler_timeline_latest.csv",
     "latest_methods_csv": "profiler_methods_latest.csv",
-    "latest_budget_violations_csv": "profiler_budget_violations_latest.csv"
+    "latest_budget_violations_csv": "profiler_budget_violations_latest.csv",
+    "latest_lanes_csv": "profiler_lanes_latest.csv",
+    "latest_profiler_first_csv": "profiler_first_latest.csv",
+    "latest_frame_budget_csv": "profiler_frame_budget_latest.csv"
   },
   "scheduling": {
     "prefer_engine_jobs": true,
