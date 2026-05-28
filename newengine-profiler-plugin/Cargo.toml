@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [package.metadata.northstar.provider]
 route = "engine.profiler.starprofiler"
-install_name = "engine.profiler.starprofiler"
+install_name = "starProfiler-profiler"
 implements = "engine.profiler"
 
 [lib]
