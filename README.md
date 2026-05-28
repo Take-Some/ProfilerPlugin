@@ -1,6 +1,6 @@
 # North Star Engine Profiler Plugin
 
-Runtime profiler as a plugin/provider, not an engine-owned profiler subsystem.
+Runtime profiler as a plugin/provider, not an host-bundled profiler subsystem.
 
 ## Gateway / service
 
@@ -14,7 +14,7 @@ The plugin uses existing host surfaces:
 
 - `HostApiV1.register_service_v1` to expose the profiler service.
 - `HostApiV1.subscribe_events_v1` to receive task/job events.
-- `HostApiV1.call_service_v1(engine.jobs, job.invoke_service_v1, ...)` to execute heavy report build/write work on the engine-owned jobs/tasks path.
+- `HostApiV1.call_service_v1(engine.jobs, job.invoke_service_v1, ...)` to execute heavy report build/write work on the engine.jobs provider path.
 - Standard service calls to `engine.profiler` / `profiler.api` for explicit instrumentation.
 - Host-emitted generic diagnostics job events for plugin lifecycle operations and service calls.
 
@@ -65,7 +65,7 @@ Default scheduling configuration:
 
 Method behavior:
 
-- `profiler.flush_report_v1` uses `scheduling.service_flush_mode`; by default it calls `engine.jobs/job.invoke_service_v1`, which schedules `profiler.flush_report_sync_v1` on an engine-owned worker.
+- `profiler.flush_report_v1` uses `scheduling.service_flush_mode`; by default it calls `engine.jobs/job.invoke_service_v1`, which schedules `profiler.flush_report_sync_v1` on an engine.jobs worker.
 - `profiler.flush_report_async_v1` explicitly schedules a visible profiler flush job through `job.invoke_service_v1`; it does not create plugin-owned background threads.
 - `profiler.flush_report_sync_v1` is the synchronous worker entrypoint used by `engine.jobs` or by the final shutdown flush.
 - `profiler.flush_status_json_v1` reports scheduled/in-progress/failed flushes and recent scheduling diagnostics.

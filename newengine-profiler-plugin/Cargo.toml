@@ -1,9 +1,14 @@
 [package]
-name = "StarProfiler"
+name = "engine-profiler-starprofiler"
 version = "0.2.0"
 edition = "2021"
-description = "NewEngine profiling and diagnostics runtime plugin"
+description = "North Star profiler provider route: StarProfiler diagnostics implementation"
 license = "MIT OR Apache-2.0"
+
+[package.metadata.northstar.provider]
+route = "engine.profiler.starprofiler"
+install_name = "engine.profiler.starprofiler"
+implements = "engine.profiler"
 
 [lib]
 crate-type = ["cdylib"]

@@ -55,7 +55,7 @@ impl ProfilerPlugin {
                 1,
             )
             .with_json(RString::from(
-                r#"{"schema":"newengine.profiler.job_scheduler_requirement.v1","gateway":"engine.jobs","methods":["job.invoke_service_v1","job.start_v1","job.progress_event_v1","job.status_json_v1"],"purpose":"execute profiler report build/write work on engine-owned job workers instead of hidden plugin background load"}"#,
+                r#"{"schema":"newengine.profiler.job_scheduler_requirement.v1","gateway":"engine.jobs","methods":["job.invoke_service_v1","job.start_v1","job.progress_event_v1","job.status_json_v1"],"purpose":"execute profiler report build/write work on engine.jobs provider workers instead of hidden plugin background load"}"#,
             )),
         )
         .push(CapabilityDesc::backend_route(
