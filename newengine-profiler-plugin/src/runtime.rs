@@ -456,9 +456,13 @@ impl ProfilerRuntime {
 
     fn record_end_value_locked(&self, state: &mut ProfilerState, value: Value) -> Result<(), String> {
         let wire: JobEndWire = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-        let id = wire.id;
+        let id = wire.id.clone();
         let Some(mut active) = state.active.remove(&id) else {
             if recently_completed_duplicate_terminal(state, &id) {
+                return Ok(());
+            }
+            if let Some(record) = self.synthesize_plugin_load_terminal_without_begin(&id, &wire, value.clone()) {
+                self.complete_job_locked(state, record);
                 return Ok(());
             }
             Self::push_diag_locked(
@@ -509,6 +513,56 @@ impl ProfilerRuntime {
 
         self.complete_job_locked(state, active.record);
         Ok(())
+    }
+
+
+    fn synthesize_plugin_load_terminal_without_begin(&self, id: &str, wire: &JobEndWire, value: Value) -> Option<JobRecord> {
+        let metadata = wire.metadata.clone().unwrap_or_else(|| value.clone());
+        let operation = metadata.get("operation").and_then(Value::as_str).unwrap_or_default();
+        if operation != "load_one" {
+            return None;
+        }
+        let elapsed_ms = metadata
+            .get("total_ms")
+            .and_then(Value::as_f64)
+            .or_else(|| metadata.get("elapsed_ms").and_then(Value::as_f64))?;
+        let path = metadata.get("path").and_then(Value::as_str).unwrap_or(id);
+        let budget_ms = self.default_budget_for("plugin_lifecycle");
+        let now = unix_ms();
+        let mut record = JobRecord {
+            id: id.to_owned(),
+            name: format!("plugin_load:{path}"),
+            category: "plugin_lifecycle".to_owned(),
+            source: "newengine-plugin-host".to_owned(),
+            lane: "Plugin".to_owned(),
+            priority: "Normal".to_owned(),
+            dependency_group: "plugin-host".to_owned(),
+            frame_id: wire.frame_id,
+            status: wire.status.clone().unwrap_or_else(|| "completed".to_owned()),
+            detail: wire.detail.clone().unwrap_or_else(|| "Plugin load terminal event captured after profiler route became available".to_owned()),
+            scheduled: true,
+            blocked: false,
+            polling: false,
+            waited_on_gpu: false,
+            stayed_async: false,
+            exceeded_frame_budget: false,
+            frame_budget_ms: wire.frame_budget_ms,
+            gpu_wait_ms: wire.gpu_wait_ms,
+            wait_reason: wire.wait_reason.clone(),
+            async_mode: wire.async_mode.clone(),
+            started_unix_ms: now.saturating_sub(elapsed_ms.round().max(0.0) as u128),
+            ended_unix_ms: Some(now),
+            elapsed_ms: Some(elapsed_ms),
+            budget_ms,
+            load: Some(elapsed_ms / budget_ms.max(0.001)),
+            progress: None,
+            payload_bytes: None,
+            output_bytes: wire.output_bytes,
+            error: wire.error.clone(),
+            metadata,
+        };
+        refresh_record_classification(&mut record);
+        Some(record)
     }
 
     fn record_status_value_locked(&self, state: &mut ProfilerState, value: Value) -> Result<(), String> {
