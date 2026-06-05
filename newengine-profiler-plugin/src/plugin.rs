@@ -2,13 +2,15 @@ use abi_stable::sabi_trait::TD_Opaque;
 use abi_stable::std_types::{RResult, RString, RVec};
 use abi_stable::StableAbi;
 use newengine_plugin_api::{
-    BackendRouteDescriptor, BackendServiceSpec, CapabilityDesc, CapabilityKind, CapabilityRole,
     ConfigApplyResultV1, ConfigBlobV1, ConfigDiagLevelV1, ConfigDiagV1, ConfigPatchV1,
-    EventSinkV1Dyn, EventSinkV1_TO, HostApiV1, PluginDescriptor, PluginKind,
+    EventSinkV1Dyn, EventSinkV1_TO, HostApiV1, PluginDescriptor,
     PluginModule, ServiceV1Dyn, ServiceV1_TO,
 };
 use serde_json::Value;
 use std::sync::Arc;
+
+#[path = "plugin_definition.rs"]
+mod plugin_definition;
 
 use crate::config::ProfilerConfig;
 use crate::constants::*;
@@ -25,52 +27,7 @@ pub(crate) struct ProfilerPlugin {
 
 impl ProfilerPlugin {
     fn descriptor_impl(&self) -> PluginDescriptor {
-        PluginDescriptor::builder(
-            PROFILER_PLUGIN_ID,
-            PROFILER_PLUGIN_NAME,
-            env!("CARGO_PKG_VERSION"),
-            PluginKind::Runtime,
-        )
-        .provides_service(
-            PROFILER_SERVICE_ID,
-            1,
-            RString::from(SERVICE_DESCRIPTION_JSON),
-        )
-        .push(
-            CapabilityDesc::new(
-                "host.events.v1",
-                CapabilityRole::Requires,
-                CapabilityKind::EventsV1,
-                1,
-            )
-            .with_json(RString::from(
-                r#"{"schema":"newengine.profiler.event_requirements.v1","topics":["engine.task.event.v1","engine.jobs.event.v1","newengine.diagnostics.job.begin.v1","newengine.diagnostics.job.end.v1","newengine.diagnostics.job.status.v1","newengine.diagnostics.profiler.sample.v1"]}"#,
-            )),
-        )
-        .push(
-            CapabilityDesc::new(
-                "engine.jobs",
-                CapabilityRole::Requires,
-                CapabilityKind::ServiceV1,
-                1,
-            )
-            .with_json(RString::from(
-                r#"{"schema":"newengine.profiler.job_scheduler_requirement.v1","gateway":"engine.jobs","methods":["job.invoke_service_v1","job.start_v1","job.progress_event_v1","job.status_json_v1"],"purpose":"execute profiler report build/write work on engine.jobs provider workers instead of hidden plugin background load"}"#,
-            )),
-        )
-        .push(CapabilityDesc::backend_route(
-            PROFILER_BACKEND_CAPABILITY_ID,
-            BackendRouteDescriptor::new(BackendServiceSpec::new(
-                "profiler",
-                ENGINE_PROFILER_GATEWAY_ID,
-                PROFILER_SERVICE_ID,
-                PROFILER_BACKEND_CAPABILITY_ID,
-            ))
-            .provider_route(PROFILER_PROVIDER_GATEWAY_ID)
-            .backend("starprofiler")
-            .priority(100),
-        ))
-        .build()
+        plugin_definition::descriptor()
     }
 
     fn init_with_cfg(&mut self, host: HostApiV1, cfg: ProfilerConfig) -> Result<(), String> {
