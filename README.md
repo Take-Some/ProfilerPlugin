@@ -1,11 +1,11 @@
 # North Star Engine Profiler Plugin
 
-[![CI](https://github.com/CalistaVerner/ProfilerPlugin/actions/workflows/ci.yml/badge.svg)](https://github.com/CalistaVerner/ProfilerPlugin/actions/workflows/ci.yml)
-![Rust](https://img.shields.io/badge/rust-stable-orange)
-![Gateway](https://img.shields.io/badge/gateway-engine.profiler-blue)
-![Capability](https://img.shields.io/badge/capability-profiler.backend-blueviolet)
-![Provider](https://img.shields.io/badge/provider-starProfiler--profiler-success)
-![Owner](https://img.shields.io/badge/origin-Take%20Some%28%29%20%2F%20Kalista-black)
+[![CI](https://img.shields.io/badge/CI-GITHUB%20ACTIONS-2D9CFF?style=flat-square&labelColor=5A5A5A)](https://github.com/Take-Some/ProfilerPlugin/actions/workflows/ci.yml)
+![RUST](https://img.shields.io/badge/RUST-STABLE-F28C28?style=flat-square&labelColor=5A5A5A)
+![ENGINE](https://img.shields.io/badge/ENGINE-NORTH%20STAR-2D9CFF?style=flat-square&labelColor=5A5A5A)
+![PLUGIN](https://img.shields.io/badge/PLUGIN-PROFILER-103B4A?style=flat-square&labelColor=5A5A5A)
+![PROVIDER](https://img.shields.io/badge/PROVIDER-STARPROFILER-0C3340?style=flat-square&labelColor=5A5A5A)
+![STATUS](https://img.shields.io/badge/STATUS-ADOPTED-D4B000?style=flat-square&labelColor=5A5A5A)
 
 ## Origin / adoption
 
@@ -42,7 +42,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo build --workspace --locked --profile release
 ```
 
-If `Take-Some/NewEngine` is private in the target GitHub organization, configure `NORTHSTAR_CI_TOKEN` with read access to that repository; otherwise the workflow falls back to `github.token`.
+If `Take-Some/NewEngine` is private in the target GitHub organization, configure `NORTHSTAR_CI_TOKEN` with read access to that repository before running CI.
 
 ## Capture model
 
