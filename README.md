@@ -160,12 +160,12 @@ The timestamped JSON/Markdown/CSV report files are canonical archive members. Th
 Start at **Quick answer — who ate my cookies**. It points to the grouped offender with the largest `total_elapsed_ms` share. Then read:
 
 1. **Profiler-first telemetry view** — answers the production questions: what was scheduled, blocked, polling, waiting on GPU, over frame budget, or still async.
-2. **Load chart — категории по суммарному времени** — high-level domain split.
+2. **Load chart — summary time chart** — high-level domain split.
 3. **Load chart — lanes** — `engine.jobs` lane split, including `Simulation`, `RenderPrep`, `Streaming`, `AssetIo`, `Plugin`, `Background` or provider-defined lanes.
 4. **Load chart — top offenders** — grouped suspect chart by service/plugin/method/name.
 5. **Top offenders by total elapsed time** — best table for answering who consumed the captured processor time.
 6. **Top methods by total elapsed time** — which service method accumulated the most captured time.
-7. **Budget violations — что пробило кадр/лимит** — jobs that exceeded expected frame/service budgets.
+7. **Budget violations — who's killed the framerate** — jobs that exceeded expected frame/service budgets.
 8. **Frame budget violations — explicit frame envelope misses** — jobs that crossed explicit `frame_budget_ms`, grouped with frame/lane/wait/GPU/async fields.
 9. **Top single jobs by elapsed time** — worst individual spikes.
 10. **Top single jobs by budget load** — jobs that exceeded their expected budget the hardest.
