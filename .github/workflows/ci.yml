@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout plugin
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: NorthStar/Plugins/${{ env.PLUGIN_NAME }}
 
@@ -47,7 +47,7 @@ jobs:
           }
 
       - name: Checkout NewEngine API dependency
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.NEWENGINE_REPOSITORY }}
           ref: ${{ env.NEWENGINE_REF }}
