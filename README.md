@@ -10,7 +10,7 @@
 ## Origin / adoption
 
 > [!NOTE]
-> **Kalista Verner / Калиста**, developer of **Take Some()**, originally built this as her personal profiler plugin.
+> **Calista Verner**, developer of **Take Some()**, originally built this as her personal profiler plugin.
 > It was not designed as a host-bundled profiler subsystem. It started as a focused plugin-provider experiment.
 > The implementation proved strong enough — gateway-routed, jobs-aware, report-oriented and cleanly isolated — that North Star adopted it as a first-party profiler provider.
 
@@ -157,7 +157,7 @@ The timestamped JSON/Markdown/CSV report files are canonical archive members. Th
 
 ## How to read the Markdown report
 
-Start at **Quick answer — кто жрёт время**. It points to the grouped offender with the largest `total_elapsed_ms` share. Then read:
+Start at **Quick answer — who ate my cookies**. It points to the grouped offender with the largest `total_elapsed_ms` share. Then read:
 
 1. **Profiler-first telemetry view** — answers the production questions: what was scheduled, blocked, polling, waiting on GPU, over frame budget, or still async.
 2. **Load chart — категории по суммарному времени** — high-level domain split.
