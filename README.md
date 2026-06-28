@@ -1,11 +1,13 @@
 # North Star Engine Profiler Plugin
 
-[![CI](https://img.shields.io/badge/CI-GITHUB%20ACTIONS-2D9CFF?style=flat-square&labelColor=5A5A5A)](https://github.com/Take-Some/ProfilerPlugin/actions/workflows/ci.yml)
-![RUST](https://img.shields.io/badge/RUST-STABLE-F28C28?style=flat-square&labelColor=5A5A5A)
-![ENGINE](https://img.shields.io/badge/ENGINE-NORTH%20STAR-2D9CFF?style=flat-square&labelColor=5A5A5A)
-![PLUGIN](https://img.shields.io/badge/PLUGIN-PROFILER-103B4A?style=flat-square&labelColor=5A5A5A)
-![PROVIDER](https://img.shields.io/badge/PROVIDER-STARPROFILER-0C3340?style=flat-square&labelColor=5A5A5A)
-![STATUS](https://img.shields.io/badge/STATUS-ADOPTED-D4B000?style=flat-square&labelColor=5A5A5A)
+<!-- northstar-badges:start -->
+[![CI](https://github.com/Take-Some/ProfilerPlugin/actions/workflows/ci.yml/badge.svg)](https://github.com/Take-Some/ProfilerPlugin/actions/workflows/ci.yml)
+[![Dependabot](https://img.shields.io/badge/Dependabot-enabled-025E8C?style=flat-square&logo=dependabot)](https://github.com/Take-Some/ProfilerPlugin/network/updates)
+![Rust](https://img.shields.io/badge/Rust-stable-F28C28?style=flat-square&logo=rust)
+![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?style=flat-square&logo=windows)
+![Engine](https://img.shields.io/badge/Engine-North%20Star-2D9CFF?style=flat-square)
+![Plugin](https://img.shields.io/badge/Plugin-PROFILER-103B4A?style=flat-square)
+<!-- northstar-badges:end -->
 
 ## Origin / adoption
 
@@ -24,7 +26,7 @@ Runtime profiler as a plugin/provider, not an host-bundled profiler subsystem.
 - Provider service: `profiler.api`
 - Capability: `profiler.backend`
 
-## CI / quality gates
+## CI / dependency updates
 
 GitHub Actions builds this repository in the same layout used by the North Star plugin workspace:
 
@@ -38,11 +40,13 @@ The workflow checks:
 ```text
 cargo check --workspace --all-targets --locked
 cargo test --workspace --all-targets --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
 cargo build --workspace --locked --profile release
 ```
 
 If `Take-Some/NewEngine` is private in the target GitHub organization, configure `NORTHSTAR_CI_TOKEN` with read access to that repository before running CI.
+
+Dependabot is configured in `.github/dependabot.yml` for weekly Cargo and GitHub Actions dependency maintenance.
 
 ## Capture model
 

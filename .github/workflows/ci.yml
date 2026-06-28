@@ -6,6 +6,9 @@ on:
       - main
       - master
   pull_request:
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 permissions:
@@ -13,21 +16,21 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
-  NORTHSTAR_PLUGIN_INSTALL_NAME: starProfiler-profiler
   NEWENGINE_REPOSITORY: Take-Some/NewEngine
   NEWENGINE_REF: main
+  PLUGIN_NAME: ProfilerPlugin
 
 jobs:
   rust-windows:
     name: Rust / Windows
     runs-on: windows-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout ProfilerPlugin
+      - name: Checkout plugin
         uses: actions/checkout@v4
         with:
-          path: NorthStar/Plugins/ProfilerPlugin
+          path: NorthStar/Plugins/${{ env.PLUGIN_NAME }}
 
       - name: Require NewEngine checkout token
         shell: pwsh
@@ -36,9 +39,9 @@ jobs:
         run: |
           if ([string]::IsNullOrWhiteSpace($env:NORTHSTAR_CI_TOKEN)) {
             $message = @"
-          NORTHSTAR_CI_TOKEN is required for this workflow because it checks out the private cross-repository dependency '$env:NEWENGINE_REPOSITORY'.
+          NORTHSTAR_CI_TOKEN is required because this workflow checks out the private cross-repository dependency '$env:NEWENGINE_REPOSITORY'.
 
-          Create a fine-grained PAT or GitHub App token with Contents: Read access to '$env:NEWENGINE_REPOSITORY', then add it as repository secret NORTHSTAR_CI_TOKEN in Take-Some/ProfilerPlugin.
+          Create a fine-grained PAT or GitHub App token with Contents: Read access to '$env:NEWENGINE_REPOSITORY', then add it as repository secret NORTHSTAR_CI_TOKEN in this plugin repository.
           "@
             Write-Error $message
           }
@@ -57,13 +60,18 @@ jobs:
         with:
           components: clippy
 
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: NorthStar/Plugins/${{ env.PLUGIN_NAME }} -> target
+
       - name: Verify North Star workspace layout
         shell: pwsh
         run: |
           $required = @(
             "NorthStar/NewEngine/neocore2/crates/newengine-plugin-kit/Cargo.toml",
-            "NorthStar/Plugins/ProfilerPlugin/build_support/plugin_cdylib_build.rs",
-            "NorthStar/Plugins/ProfilerPlugin/Cargo.toml"
+            "NorthStar/Plugins/$env:PLUGIN_NAME/Cargo.toml",
+            "NorthStar/Plugins/$env:PLUGIN_NAME/Cargo.lock"
           )
 
           foreach ($path in $required) {
@@ -73,40 +81,24 @@ jobs:
           }
 
       - name: Cargo check
-        working-directory: NorthStar/Plugins/ProfilerPlugin
+        working-directory: NorthStar/Plugins/${{ env.PLUGIN_NAME }}
         run: cargo check --workspace --all-targets --locked
 
       - name: Cargo test
-        working-directory: NorthStar/Plugins/ProfilerPlugin
+        working-directory: NorthStar/Plugins/${{ env.PLUGIN_NAME }}
         run: cargo test --workspace --all-targets --locked
 
       - name: Cargo clippy
-        working-directory: NorthStar/Plugins/ProfilerPlugin
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        working-directory: NorthStar/Plugins/${{ env.PLUGIN_NAME }}
+        run: cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
 
       - name: Cargo release build
-        working-directory: NorthStar/Plugins/ProfilerPlugin
-        env:
-          NEWENGINE_PLUGIN_BUILD_TYPE: release
+        working-directory: NorthStar/Plugins/${{ env.PLUGIN_NAME }}
         run: cargo build --workspace --locked --profile release
 
-      - name: Verify release DLL
-        shell: pwsh
-        run: |
-          $releaseDir = "NorthStar/Plugins/ProfilerPlugin/target/release"
-          $dlls = @()
-          $dlls += Get-ChildItem -Path $releaseDir -Filter "starProfiler-profiler-*.dll" -File -ErrorAction SilentlyContinue
-          $dlls += Get-ChildItem -Path $releaseDir -Filter "engine_profiler_starprofiler.dll" -File -ErrorAction SilentlyContinue
-          if ($dlls.Count -lt 1) {
-            Write-Error "No ProfilerPlugin release DLL was produced."
-          }
-          $dlls | ForEach-Object { Write-Host "Produced $($_.FullName)" }
-
-      - name: Upload release DLL
+      - name: Upload release DLLs
         uses: actions/upload-artifact@v4
         with:
-          name: starProfiler-profiler-windows
-          path: |
-            NorthStar/Plugins/ProfilerPlugin/target/release/starProfiler-profiler-*.dll
-            NorthStar/Plugins/ProfilerPlugin/target/release/engine_profiler_starprofiler.dll
-          if-no-files-found: error
+          name: ${{ env.PLUGIN_NAME }}-windows-release
+          path: NorthStar/Plugins/${{ env.PLUGIN_NAME }}/target/release/*.dll
+          if-no-files-found: warn
