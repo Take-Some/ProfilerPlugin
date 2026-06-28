@@ -15,6 +15,8 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
   NORTHSTAR_PLUGIN_INSTALL_NAME: starProfiler-profiler
+  NEWENGINE_REPOSITORY: Take-Some/NewEngine
+  NEWENGINE_REF: main
 
 jobs:
   rust-windows:
@@ -27,12 +29,28 @@ jobs:
         with:
           path: NorthStar/Plugins/ProfilerPlugin
 
+      - name: Require NewEngine checkout token
+        shell: pwsh
+        env:
+          NORTHSTAR_CI_TOKEN: ${{ secrets.NORTHSTAR_CI_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:NORTHSTAR_CI_TOKEN)) {
+            $message = @"
+          NORTHSTAR_CI_TOKEN is required for this workflow because it checks out the private cross-repository dependency '$env:NEWENGINE_REPOSITORY'.
+
+          Create a fine-grained PAT or GitHub App token with Contents: Read access to '$env:NEWENGINE_REPOSITORY', then add it as repository secret NORTHSTAR_CI_TOKEN in Take-Some/ProfilerPlugin.
+          "@
+            Write-Error $message
+          }
+
       - name: Checkout NewEngine API dependency
         uses: actions/checkout@v4
         with:
-          repository: Take-Some/NewEngine
+          repository: ${{ env.NEWENGINE_REPOSITORY }}
+          ref: ${{ env.NEWENGINE_REF }}
           path: NorthStar/NewEngine
-          token: ${{ secrets.NORTHSTAR_CI_TOKEN || github.token }}
+          token: ${{ secrets.NORTHSTAR_CI_TOKEN }}
+          persist-credentials: false
 
       - name: Setup Rust stable
         uses: dtolnay/rust-toolchain@stable
