@@ -40,6 +40,16 @@ struct CsvArtifact {
     bytes: Vec<u8>,
 }
 
+struct ArchiveManifestInput<'a> {
+    report: &'a Value,
+    paths: &'a ReportPaths,
+    created_utc: &'a str,
+    created_unix_ms: u128,
+    json_entry_name: Option<&'a str>,
+    markdown_entry_name: Option<&'a str>,
+    csv_entry_names: &'a BTreeMap<String, String>,
+}
+
 impl ProfilerRuntime {
     pub(crate) fn flush_report(&self, reason: &str) -> Result<Value, String> {
         let shutdown_report = is_shutdown_report_reason(reason);
@@ -862,13 +872,15 @@ impl ProfilerRuntime {
                 .map(|a| (a.kind.to_owned(), a.timestamped_name.clone()))
                 .collect::<BTreeMap<_, _>>();
             let manifest = self.build_report_archive_manifest(
-                report,
-                &paths,
-                &created_utc,
-                created_unix_ms,
-                json_bytes.as_ref().map(|_| json_entry_name.as_str()),
-                markdown_bytes.as_ref().map(|_| markdown_entry_name.as_str()),
-                &csv_entry_names,
+                ArchiveManifestInput {
+                    report,
+                    paths: &paths,
+                    created_utc: &created_utc,
+                    created_unix_ms,
+                    json_entry_name: json_bytes.as_ref().map(|_| json_entry_name.as_str()),
+                    markdown_entry_name: markdown_bytes.as_ref().map(|_| markdown_entry_name.as_str()),
+                    csv_entry_names: &csv_entry_names,
+                },
             );
             let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
 
@@ -918,31 +930,22 @@ impl ProfilerRuntime {
         Ok((paths, csv_total_bytes))
     }
 
-    fn build_report_archive_manifest(
-        &self,
-        report: &Value,
-        paths: &ReportPaths,
-        created_utc: &str,
-        created_unix_ms: u128,
-        json_entry_name: Option<&str>,
-        markdown_entry_name: Option<&str>,
-        csv_entry_names: &BTreeMap<String, String>,
-    ) -> Value {
+    fn build_report_archive_manifest(&self, input: ArchiveManifestInput<'_>) -> Value {
         json!({
             "schema": "newengine.profiler.report_archive.manifest.v2",
-            "created_utc": created_utc,
-            "created_unix_ms": created_unix_ms,
-            "reason": report.get("reason").cloned().unwrap_or(Value::Null),
-            "archive": paths.archive.clone(),
+            "created_utc": input.created_utc,
+            "created_unix_ms": input.created_unix_ms,
+            "reason": input.report.get("reason").cloned().unwrap_or(Value::Null),
+            "archive": input.paths.archive.clone(),
             "latest": {
-                "json": paths.json_latest.clone(),
-                "markdown": paths.markdown_latest.clone(),
-                "csv": paths.csv_latest.clone(),
+                "json": input.paths.json_latest.clone(),
+                "markdown": input.paths.markdown_latest.clone(),
+                "csv": input.paths.csv_latest.clone(),
             },
             "entries": {
-                "json": json_entry_name,
-                "markdown": markdown_entry_name,
-                "csv": csv_entry_names,
+                "json": input.json_entry_name,
+                "markdown": input.markdown_entry_name,
+                "csv": input.csv_entry_names,
                 "manifest": "manifest.json",
             },
             "policy": {

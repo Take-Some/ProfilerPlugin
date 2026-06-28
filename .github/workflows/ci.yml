@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  NORTHSTAR_PLUGIN_INSTALL_NAME: starProfiler-profiler
+
+jobs:
+  rust-windows:
+    name: Rust / Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout ProfilerPlugin
+        uses: actions/checkout@v4
+        with:
+          path: NorthStar/Plugins/ProfilerPlugin
+
+      - name: Checkout NewEngine API dependency
+        uses: actions/checkout@v4
+        with:
+          repository: Take-Some/NewEngine
+          path: NorthStar/NewEngine
+          token: ${{ secrets.NORTHSTAR_CI_TOKEN || github.token }}
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Verify North Star workspace layout
+        shell: pwsh
+        run: |
+          $required = @(
+            "NorthStar/NewEngine/neocore2/crates/newengine-plugin-kit/Cargo.toml",
+            "NorthStar/Plugins/ProfilerPlugin/build_support/plugin_cdylib_build.rs",
+            "NorthStar/Plugins/ProfilerPlugin/Cargo.toml"
+          )
+
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) {
+              Write-Error "Required path is missing: $path"
+            }
+          }
+
+      - name: Cargo check
+        working-directory: NorthStar/Plugins/ProfilerPlugin
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Cargo test
+        working-directory: NorthStar/Plugins/ProfilerPlugin
+        run: cargo test --workspace --all-targets --locked
+
+      - name: Cargo clippy
+        working-directory: NorthStar/Plugins/ProfilerPlugin
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Cargo release build
+        working-directory: NorthStar/Plugins/ProfilerPlugin
+        env:
+          NEWENGINE_PLUGIN_BUILD_TYPE: release
+        run: cargo build --workspace --locked --profile release
+
+      - name: Verify release DLL
+        shell: pwsh
+        run: |
+          $releaseDir = "NorthStar/Plugins/ProfilerPlugin/target/release"
+          $dlls = @()
+          $dlls += Get-ChildItem -Path $releaseDir -Filter "starProfiler-profiler-*.dll" -File -ErrorAction SilentlyContinue
+          $dlls += Get-ChildItem -Path $releaseDir -Filter "engine_profiler_starprofiler.dll" -File -ErrorAction SilentlyContinue
+          if ($dlls.Count -lt 1) {
+            Write-Error "No ProfilerPlugin release DLL was produced."
+          }
+          $dlls | ForEach-Object { Write-Host "Produced $($_.FullName)" }
+
+      - name: Upload release DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: starProfiler-profiler-windows
+          path: |
+            NorthStar/Plugins/ProfilerPlugin/target/release/starProfiler-profiler-*.dll
+            NorthStar/Plugins/ProfilerPlugin/target/release/engine_profiler_starprofiler.dll
+          if-no-files-found: error

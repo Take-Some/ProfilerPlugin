@@ -39,12 +39,12 @@ impl ProfilerPlugin {
         let rt = Arc::new(ProfilerRuntime::new(cfg.clone(), Some(scheduler)));
         let _ = RUNTIME.set(rt);
 
-        let service: ServiceV1Dyn<'static> = ServiceV1_TO::from_value(ProfilerService::default(), TD_Opaque);
+        let service: ServiceV1Dyn<'static> = ServiceV1_TO::from_value(ProfilerService, TD_Opaque);
         (host.register_service_v1)(service)
             .into_result()
             .map_err(|e| e.to_string())?;
 
-        let sink: EventSinkV1Dyn<'static> = EventSinkV1_TO::from_value(ProfilerEventSink::default(), TD_Opaque);
+        let sink: EventSinkV1Dyn<'static> = EventSinkV1_TO::from_value(ProfilerEventSink, TD_Opaque);
         (host.subscribe_events_v1)(sink)
             .into_result()
             .map_err(|e| e.to_string())?;

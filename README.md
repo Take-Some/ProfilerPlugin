@@ -1,5 +1,21 @@
 # North Star Engine Profiler Plugin
 
+[![CI](https://github.com/CalistaVerner/ProfilerPlugin/actions/workflows/ci.yml/badge.svg)](https://github.com/CalistaVerner/ProfilerPlugin/actions/workflows/ci.yml)
+![Rust](https://img.shields.io/badge/rust-stable-orange)
+![Gateway](https://img.shields.io/badge/gateway-engine.profiler-blue)
+![Capability](https://img.shields.io/badge/capability-profiler.backend-blueviolet)
+![Provider](https://img.shields.io/badge/provider-starProfiler--profiler-success)
+![Owner](https://img.shields.io/badge/origin-Take%20Some%28%29%20%2F%20Kalista-black)
+
+## Origin / adoption
+
+> [!NOTE]
+> **Kalista Verner / Калиста**, developer of **Take Some()**, originally built this as her personal profiler plugin.
+> It was not designed as a host-bundled profiler subsystem. It started as a focused plugin-provider experiment.
+> The implementation proved strong enough — gateway-routed, jobs-aware, report-oriented and cleanly isolated — that North Star adopted it as a first-party profiler provider.
+
+This history matters architecturally: `engine.profiler` stays host-owned, while `starProfiler-profiler` remains a replaceable provider implementation.
+
 Runtime profiler as a plugin/provider, not an host-bundled profiler subsystem.
 
 ## Gateway / service
@@ -7,6 +23,26 @@ Runtime profiler as a plugin/provider, not an host-bundled profiler subsystem.
 - Gateway: `engine.profiler`
 - Provider service: `profiler.api`
 - Capability: `profiler.backend`
+
+## CI / quality gates
+
+GitHub Actions builds this repository in the same layout used by the North Star plugin workspace:
+
+```text
+NorthStar/NewEngine
+NorthStar/Plugins/ProfilerPlugin
+```
+
+The workflow checks:
+
+```text
+cargo check --workspace --all-targets --locked
+cargo test --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo build --workspace --locked --profile release
+```
+
+If `Take-Some/NewEngine` is private in the target GitHub organization, configure `NORTHSTAR_CI_TOKEN` with read access to that repository; otherwise the workflow falls back to `github.token`.
 
 ## Capture model
 
