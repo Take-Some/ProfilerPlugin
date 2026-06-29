@@ -95,7 +95,7 @@ jobs:
         run: cargo build --workspace --locked --profile release
 
       - name: Upload release DLLs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.PLUGIN_NAME }}-windows-release
           path: NorthStar/Plugins/${{ env.PLUGIN_NAME }}/target/release/*.dll
