@@ -31,8 +31,8 @@ Runtime profiler as a plugin/provider, not an host-bundled profiler subsystem.
 GitHub Actions builds this repository in the same layout used by the North Star plugin workspace:
 
 ```text
-NorthStar/NewEngine
-NorthStar/Plugins/ProfilerPlugin
+NorthStar/NewViso
+NorthStar/PluginsSrc/ProfilerPlugin
 ```
 
 The workflow checks:
@@ -44,7 +44,6 @@ cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
 cargo build --workspace --locked --profile release
 ```
 
-If `Take-Some/NewEngine` is private in the target GitHub organization, configure `NORTHSTAR_CI_TOKEN` with read access to that repository before running CI.
 
 Dependabot is configured in `.github/dependabot.yml` for weekly Cargo and GitHub Actions dependency maintenance.
 
